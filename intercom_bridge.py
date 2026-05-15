@@ -55,7 +55,7 @@ def _sse_listener():
     try:
         with _session.get(SSE_URL, stream=True, timeout=None) as resp:
             resp.raise_for_status()
-            for raw in resp.iter_lines():
+            for raw in resp.iter_lines(chunk_size=1):
                 if isinstance(raw, bytes):
                     raw = raw.decode()
                 if not raw:
@@ -81,8 +81,8 @@ def _sse_listener():
 def _send(payload: dict) -> Optional[dict]:
     """POST a JSON-RPC payload to the message endpoint, return response from queue."""
     global _message_endpoint
-    # Wait up to 5 s for endpoint to be established
-    for _ in range(50):
+    # Wait up to 15 s for endpoint to be established
+    for _ in range(150):
         if _message_endpoint:
             break
         import time; time.sleep(0.1)
@@ -92,8 +92,8 @@ def _send(payload: dict) -> Optional[dict]:
                 "error": {"code": -32603, "message": "SSE endpoint not ready"}}
 
     try:
-        _session.post(_message_endpoint, json=payload, timeout=30)
-        return _response_queue.get(timeout=30)
+        _session.post(_message_endpoint, json=payload, timeout=60)
+        return _response_queue.get(timeout=60)
     except queue.Empty:
         return {"jsonrpc": "2.0", "id": payload.get("id"),
                 "error": {"code": -32603, "message": "Response timeout"}}
