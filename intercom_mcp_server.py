@@ -552,10 +552,17 @@ session_lock = threading.Lock()
 
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
-    pass
+    daemon_threads = True
+
+    def server_bind(self):
+        import socket
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        super().server_bind()
 
 
 class SSEHandler(BaseHTTPRequestHandler):
+    timeout = None
+
     def log_message(self, format, *args):
         logger.info(f"{self.address_string()} - {format % args}")
 
