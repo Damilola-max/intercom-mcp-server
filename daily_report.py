@@ -55,6 +55,9 @@ INTERCOM_API_TOKEN: str = os.getenv("INTERCOM_API_TOKEN", "")
 REPORT_RECIPIENTS: List[str] = [
     r.strip() for r in os.getenv("REPORT_RECIPIENTS", "damilola@ftuk.com").split(",") if r.strip()
 ]
+REPORT_CC: List[str] = [
+    r.strip() for r in os.getenv("REPORT_CC", "abdel@ftuk.com").split(",") if r.strip()
+]
 REPORT_SEND_TIME: str = os.getenv("REPORT_SEND_TIME", "08:00")
 
 SMTP_HOST: str = os.getenv("SMTP_HOST", "smtp.gmail.com")
@@ -64,6 +67,7 @@ SENDER_PASSWORD: str = os.getenv("EMAIL_1_PASSWORD", "").replace(" ", "")
 SENDER_DISPLAY: str = os.getenv("EMAIL_1_DISPLAY_NAME", "FTUK Support")
 
 INTERCOM_API_BASE = "https://api.intercom.io"
+INTERCOM_APP_ID: str = os.getenv("INTERCOM_APP_ID", "lhjtrulf")
 
 # Known agents — fallback map (updated by fetch_admins at runtime)
 ADMIN_MAP: Dict[str, str] = {
@@ -77,6 +81,9 @@ ADMIN_MAP: Dict[str, str] = {
     "10384010": "Nanda",
     "10390175": "Navin",
 }
+
+# FIN bot identifiers — any admin name containing these strings is FIN
+FIN_KEYWORDS = ["fin", "bot", "assistant", "automated", "resolution bot"]
 
 # ─── Intercom helpers ─────────────────────────────────────────────────────────
 
@@ -187,7 +194,8 @@ def summarise_conversation(conv: Dict[str, Any]) -> Dict[str, Any]:
         "assignee_name": assignee_name if assignee_name else "Unassigned",
         "was_handled": bool(stats.get("last_closed_by_id") or stats.get("first_admin_reply_at")),
         "closed_by_id": str(stats.get("last_closed_by_id") or ""),
-        "first_response_time": stats.get("time_to_admin_reply"),
+        "time_to_first_response": stats.get("time_to_admin_reply"),
+        "first_response_time": stats.get("time_to_admin_reply"),  # alias
         "time_to_close": stats.get("time_to_first_close"),
         "reopened_count": stats.get("count_reopens", 0),
         "reply_count": stats.get("count_conversation_parts", 0),
@@ -238,259 +246,339 @@ def _pct(part: int, total: int) -> str:
     return f"{round(part / total * 100)}%"
 
 
-def _stat_row(label: str, value: str, highlight: bool = False) -> str:
-    bg = "#fef9c3" if highlight else "#ffffff"
+# ── Dark dashboard helpers ───────────────────────────────────────────────────
+
+D_BG       = "#1a1f2e"   # page background
+D_CARD     = "#242938"   # card background
+D_CARD2    = "#2d3348"   # alternate / lighter card
+D_BORDER   = "#353b52"   # subtle border
+D_TEXT     = "#e2e8f0"   # primary text
+D_MUTED    = "#8892a4"   # secondary text
+D_GREEN    = "#4ade80"   # closed / good
+D_RED      = "#f87171"   # open / bad
+D_YELLOW   = "#fbbf24"   # warning
+D_BLUE     = "#60a5fa"   # info / email
+D_PURPLE   = "#a78bfa"   # chat / FIN
+D_TEAL     = "#34d399"   # admin-initiated
+
+
+def _dark_section(title: str) -> str:
     return (
-        f'<tr style="background:{bg}">'
-        f'<td style="padding:8px 12px;border-bottom:1px solid #f3f4f6;color:#6b7280;width:55%">{label}</td>'
-        f'<td style="padding:8px 12px;border-bottom:1px solid #f3f4f6;font-weight:600">{value}</td>'
-        f"</tr>"
+        f'<div style="font-size:10px;font-weight:700;color:{D_MUTED};text-transform:uppercase;'
+        f'letter-spacing:1.5px;padding:24px 0 10px 0;border-bottom:2px solid {D_BORDER};margin-bottom:4px">'
+        f'{title}</div>'
     )
 
 
-def _card(value: str, label: str, color: str = "#1f2937", bg: str = "#f8fafc") -> str:
-    return (
-        f'<td style="width:25%;padding:0 8px 16px 8px;vertical-align:top">'
-        f'<div style="background:{bg};border:1px solid #e2e8f0;border-left:4px solid {color};'
-        f'border-radius:8px;padding:18px 16px">'
-        f'<div style="font-size:26px;font-weight:800;color:{color};line-height:1">{value}</div>'
-        f'<div style="font-size:11px;color:#64748b;margin-top:6px;font-weight:500;letter-spacing:0.3px">{label}</div>'
-        f'</div></td>'
-    )
-
-
-def _bar(value: int, total: int, color: str = "#3b82f6") -> str:
+def _dbar(value: int, total: int, color: str = "#60a5fa") -> str:
     pct = round(value / total * 100) if total else 0
     return (
-        f'<div style="background:#f1f5f9;border-radius:999px;height:6px;width:100%;margin-top:6px">'
-        f'<div style="background:{color};width:{pct}%;height:6px;border-radius:999px"></div>'
+        f'<div style="background:#2d3348;border-radius:3px;height:5px;width:100%">'
+        f'<div style="background:{color};width:{pct}%;height:5px;border-radius:3px"></div>'
         f'</div>'
     )
 
 
-def _section_heading(title: str, icon_svg: str) -> str:
-    return (
-        f'<table width="100%" style="margin:28px 0 14px 0;border-collapse:collapse"><tr>'
-        f'<td style="width:28px;vertical-align:middle;padding-right:10px">{icon_svg}</td>'
-        f'<td style="vertical-align:middle">'
-        f'<span style="font-size:13px;font-weight:700;color:#0f172a;text-transform:uppercase;letter-spacing:0.8px">{title}</span>'
-        f'</td>'
-        f'<td style="border-bottom:2px solid #e2e8f0"></td>'
-        f'</tr></table>'
-    )
-
-
-ICON_OVERVIEW  = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>'
-ICON_CHANNEL   = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'
-ICON_TOPIC     = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>'
-ICON_AGENTS    = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>'
-ICON_INSIGHTS  = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>'
-
-
 def build_report_html(summaries: List[Dict[str, Any]], report_date: datetime) -> str:
-    """Build a fully structured HTML analytics report from conversation summaries."""
+    """Build a dark-theme HTML analytics report from conversation summaries."""
     total = len(summaries)
-    date_str = report_date.strftime("%A, %d %B %Y")
-
     if total == 0:
-        return f"<p>No conversations were found for <strong>{date_str}</strong>.</p>"
+        return f'<p style="color:{D_MUTED}">No conversations found.</p>'
 
-    # ── Aggregate data ───────────────────────────────────────────────────────
-    by_state: Dict[str, int] = {}
-    by_channel: Dict[str, int] = {}
-    by_agent_closed: Dict[str, int] = {}   # agent name -> conversations closed
-    by_agent_reopened: Dict[str, int] = {} # agent name -> reopens on their closed convs
-    by_agent_parts: Dict[str, List[int]] = {}  # agent name -> list of part counts
-    by_category: Dict[str, int] = {}
-    close_times: List[float] = []
-    unhandled = 0
-    reopened_total = 0
-    high_reply: List[Dict] = []
-
+    # ── Aggregate ─────────────────────────────────────────────────────────────
     _CHANNEL_LABELS = {
         "email": "Email",
-        "chat": "Live Chat",
-        "admin_initiated": "Admin Initiated",
+        "chat": "Chat",
+        "admin_initiated": "Admin-initiated",
         "unknown": "Other",
     }
+    _CH_COLORS = {
+        "email": D_BLUE,
+        "chat": D_PURPLE,
+        "admin_initiated": D_TEAL,
+        "unknown": D_MUTED,
+    }
+    _CAT_COLORS = [D_GREEN, D_RED, "#f97316", D_PURPLE, D_BLUE, D_YELLOW, D_MUTED]
+
+    by_state: Dict[str, int] = {}
+    by_channel: Dict[str, int] = {}
+    by_agent_closed: Dict[str, int] = {}
+    by_agent_reopened: Dict[str, int] = {}
+    by_agent_parts: Dict[str, List[int]] = {}
+    by_category: Dict[str, int] = {}
+    first_resp_times: List[float] = []
+    close_times: List[float] = []
+    got_response = 0
+    unhandled = 0
+    reopened_total = 0
 
     for s in summaries:
         by_state[s["state"]] = by_state.get(s["state"], 0) + 1
         ch = s["type"] if s["type"] else "unknown"
         by_channel[ch] = by_channel.get(ch, 0) + 1
-
-        if not s.get("was_handled"):
-            unhandled += 1
-
         cat = _categorise(s.get("subject", ""), s.get("first_message_preview", ""))
         by_category[cat] = by_category.get(cat, 0) + 1
-
+        if s.get("time_to_first_response"):
+            first_resp_times.append(s["time_to_first_response"])
         if s.get("time_to_close"):
             close_times.append(s["time_to_close"])
-
+        if s.get("was_handled"):
+            got_response += 1
+        else:
+            unhandled += 1
         reopens = s.get("reopened_count") or 0
         if reopens > 0:
             reopened_total += 1
-
         parts = s.get("reply_count") or 0
-        if parts >= 10:
-            high_reply.append(s)
-
-        # Per-agent breakdown using last_closed_by_id
         agent_id = s.get("closed_by_id", "")
         agent_name = ADMIN_MAP.get(agent_id, f"Agent {agent_id}") if agent_id else None
         if agent_name and agent_name != "Bot / Assistant":
             by_agent_closed[agent_name] = by_agent_closed.get(agent_name, 0) + 1
             by_agent_reopened[agent_name] = by_agent_reopened.get(agent_name, 0) + reopens
-            if agent_name not in by_agent_parts:
-                by_agent_parts[agent_name] = []
-            by_agent_parts[agent_name].append(parts)
+            by_agent_parts.setdefault(agent_name, []).append(parts)
 
-    avg_ttc = sum(close_times) / len(close_times) if close_times else None
-    closed_count = by_state.get("closed", 0)
-    open_count   = by_state.get("open", 0)
-    handled      = total - unhandled
-    resolution_rate = round(closed_count / total * 100) if total else 0
+    closed_count     = by_state.get("closed", 0)
+    open_count       = by_state.get("open", 0)
+    snoozed_count    = by_state.get("snoozed", 0)
+    unassigned_count = sum(1 for s in summaries if not s.get("closed_by_id"))
+    resolution_rate  = round(closed_count / total * 100) if total else 0
+    avg_first_resp   = sum(first_resp_times) / len(first_resp_times) if first_resp_times else None
+    avg_ttc          = sum(close_times) / len(close_times) if close_times else None
+    handled_pct      = round(got_response / total * 100) if total else 0
+    unhandled_pct    = 100 - handled_pct
 
-    # ── STAT CARDS ───────────────────────────────────────────────────────────
-    stat_cards = (
-        _section_heading("At a Glance", ICON_OVERVIEW) +
-        f'<table style="width:100%;border-collapse:collapse;margin:0 -8px 4px -8px"><tr>'
-        f'{_card(str(total), "Total Conversations", "#3b82f6", "#eff6ff")}'
-        f'{_card(str(closed_count), "Closed", "#10b981", "#f0fdf4")}'
-        f'{_card(str(open_count), "Still Open", "#ef4444" if open_count > 5 else "#f59e0b", "#fff7ed")}'
-        f'{_card(f"{resolution_rate}%", "Resolution Rate", "#10b981" if resolution_rate >= 90 else "#f59e0b", "#f0fdf4" if resolution_rate >= 90 else "#fffbeb")}'
-        f'</tr><tr>'
-        f'{_card(str(handled), "Handled by Team", "#6366f1", "#eef2ff")}'
-        f'{_card(str(unhandled), "No Admin Response", "#ef4444" if unhandled > 0 else "#10b981", "#fef2f2" if unhandled > 0 else "#f0fdf4")}'
-        f'{_card(str(reopened_total), "Reopened", "#f59e0b" if reopened_total > 0 else "#10b981", "#fffbeb" if reopened_total > 0 else "#f0fdf4")}'
-        f'{_card(_fmt_seconds(avg_ttc), "Avg. Time to Close", "#8b5cf6", "#f5f3ff")}'
+    # ── ROW 1: top 4 metric cards ─────────────────────────────────────────────
+    snoozed_note = f'<div style="font-size:11px;color:{D_MUTED};margin-top:4px">+ {snoozed_count} snoozed</div>' if snoozed_count else ""
+    open_note    = f'<div style="font-size:11px;color:{D_MUTED};margin-top:4px">+ {snoozed_count} snoozed</div>' if snoozed_count else ""
+    closure_note = f'<div style="font-size:11px;color:{D_MUTED};margin-top:4px">{resolution_rate}% closure rate</div>'
+    unassigned_note = f'<div style="font-size:11px;color:{D_MUTED};margin-top:4px">{round(unassigned_count/total*100) if total else 0}% of total</div>'
+
+    def _metric_card(value: str, label: str, value_color: str, note: str = "") -> str:
+        return (
+            f'<td style="width:25%;padding:0 6px 0 6px;vertical-align:top">'
+            f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:8px;padding:18px 16px">'
+            f'<div style="font-size:11px;color:{D_MUTED};margin-bottom:8px;letter-spacing:0.3px">{label}</div>'
+            f'<div style="font-size:28px;font-weight:700;color:{value_color};line-height:1">{value}</div>'
+            f'{note}'
+            f'</div></td>'
+        )
+
+    row1 = (
+        f'<table style="width:100%;border-collapse:collapse;margin:0 -6px 12px -6px"><tr>'
+        + _metric_card(str(total), "Total conversations", D_TEXT)
+        + _metric_card(str(closed_count), "Closed", D_GREEN, closure_note)
+        + _metric_card(str(open_count), "Open", D_RED, open_note)
+        + _metric_card(str(unassigned_count), "Unassigned", D_YELLOW, unassigned_note)
+        + "</tr></table>"
+    )
+
+    # ── ROW 2: response time cards ────────────────────────────────────────────
+    row2 = (
+        f'<table style="width:100%;border-collapse:collapse;margin:0 -6px 24px -6px"><tr>'
+        + _metric_card(_fmt_seconds(avg_first_resp), "Avg first response", D_TEXT)
+        + _metric_card(_fmt_seconds(avg_ttc), "Avg time to close", D_TEXT)
+        + _metric_card(str(got_response), "Got a response",  D_BLUE,
+                       f'<div style="font-size:11px;color:{D_MUTED};margin-top:4px">of {total} conversations</div>')
+        + f'<td style="width:25%;padding:0 6px"></td>'
+        + "</tr></table>"
+    )
+
+    # ── CONVERSATIONS BY CHANNEL ──────────────────────────────────────────────
+    ch_rows = ""
+    for ch, cnt in sorted(by_channel.items(), key=lambda x: -x[1]):
+        color = _CH_COLORS.get(ch, D_MUTED)
+        label = _CHANNEL_LABELS.get(ch, ch.replace("_", " ").title())
+        pct_val = round(cnt / total * 100) if total else 0
+        ch_rows += (
+            f'<tr>'
+            f'<td style="padding:10px 0;border-bottom:1px solid {D_BORDER};color:{D_TEXT};font-size:13px;width:160px">'
+            f'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{color};margin-right:8px;vertical-align:middle"></span>{label}</td>'
+            f'<td style="padding:10px 16px;border-bottom:1px solid {D_BORDER};width:100%">{_dbar(cnt, total, color)}</td>'
+            f'<td style="padding:10px 0;border-bottom:1px solid {D_BORDER};text-align:right;white-space:nowrap">'
+            f'<span style="font-weight:700;color:{D_TEXT};font-size:13px">{cnt}</span> '
+            f'<span style="color:{D_MUTED};font-size:12px">({pct_val}%)</span></td>'
+            f'</tr>'
+        )
+    channel_section = (
+        _dark_section("CONVERSATIONS BY CHANNEL") +
+        f'<table style="width:100%;border-collapse:collapse;margin-bottom:24px">{ch_rows}</table>'
+    )
+
+    # ── TOP ISSUES ────────────────────────────────────────────────────────────
+    cat_rows = ""
+    for i, (cat, cnt) in enumerate(sorted(by_category.items(), key=lambda x: -x[1])):
+        color = _CAT_COLORS[i % len(_CAT_COLORS)]
+        cat_rows += (
+            f'<tr>'
+            f'<td style="padding:9px 0;border-bottom:1px solid {D_BORDER};color:{D_TEXT};font-size:13px;width:200px">{cat}</td>'
+            f'<td style="padding:9px 16px;border-bottom:1px solid {D_BORDER};width:100%">{_dbar(cnt, total, color)}</td>'
+            f'<td style="padding:9px 0;border-bottom:1px solid {D_BORDER};text-align:right;color:{D_MUTED};font-size:13px;white-space:nowrap">{cnt}</td>'
+            f'</tr>'
+        )
+    category_section = (
+        _dark_section(f"TOP ISSUES (BY CATEGORY — SAMPLE OF {total})") +
+        f'<table style="width:100%;border-collapse:collapse;margin-bottom:24px">{cat_rows}</table>'
+    )
+
+    # ── TEAM HANDLING ─────────────────────────────────────────────────────────
+    team_section = (
+        _dark_section("TEAM HANDLING") +
+        f'<table style="width:100%;border-collapse:collapse;margin-bottom:8px"><tr>'
+        f'<td style="width:50%;padding:16px 16px 16px 0;vertical-align:top">'
+        f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:8px;padding:20px">'
+        f'<div style="font-size:11px;color:{D_MUTED};margin-bottom:8px">Handled by team</div>'
+        f'<div style="font-size:32px;font-weight:700;color:{D_GREEN}">~{handled_pct}%</div>'
+        f'<div style="font-size:11px;color:{D_MUTED};margin-top:6px">of sampled conversations</div>'
+        f'</div></td>'
+        f'<td style="width:50%;padding:16px 0 16px 0;vertical-align:top">'
+        f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:8px;padding:20px">'
+        f'<div style="font-size:11px;color:{D_MUTED};margin-bottom:8px">Unhandled / bot-only</div>'
+        f'<div style="font-size:32px;font-weight:700;color:{D_RED}">~{unhandled_pct}%</div>'
+        f'<div style="font-size:11px;color:{D_MUTED};margin-top:6px">no team member assigned</div>'
+        f'</div></td>'
         f'</tr></table>'
     )
 
-    # ── CHANNEL BREAKDOWN ────────────────────────────────────────────────────
-    ch_colors = {"email": "#3b82f6", "chat": "#8b5cf6", "admin_initiated": "#10b981", "unknown": "#94a3b8"}
-    channel_rows = "".join(
-        f'<tr>'
-        f'<td style="padding:11px 12px;border-bottom:1px solid #f1f5f9;color:#1e293b;font-weight:500;font-size:13px">'
-        f'  <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:{ch_colors.get(ch,"#94a3b8")};margin-right:8px;vertical-align:middle"></span>'
-        f'  {_CHANNEL_LABELS.get(ch, ch.replace("_"," ").title())}</td>'
-        f'<td style="padding:11px 12px;border-bottom:1px solid #f1f5f9;font-weight:700;width:50px;text-align:right;color:#0f172a">{cnt}</td>'
-        f'<td style="padding:11px 12px;border-bottom:1px solid #f1f5f9;width:180px">'
-        f'  {_bar(cnt, total, ch_colors.get(ch,"#94a3b8"))}'
-        f'  <span style="font-size:11px;color:#94a3b8;font-weight:500">{_pct(cnt,total)}</span></td>'
-        f'</tr>'
-        for ch, cnt in sorted(by_channel.items(), key=lambda x: -x[1])
-    )
-    channel_section = (
-        _section_heading("Channel Breakdown", ICON_CHANNEL) +
-        f'<table style="width:100%;border-collapse:collapse;background:#f8fafc;border-radius:8px;overflow:hidden">'
-        f'{channel_rows}</table>'
-    )
-
-    # ── TOPIC CATEGORIES ─────────────────────────────────────────────────────
-    cat_colors = ["#3b82f6","#8b5cf6","#ec4899","#f59e0b","#10b981","#ef4444","#64748b"]
-    cat_rows = "".join(
-        f'<tr>'
-        f'<td style="padding:11px 12px;border-bottom:1px solid #f1f5f9;color:#1e293b;font-size:13px">{cat}</td>'
-        f'<td style="padding:11px 12px;border-bottom:1px solid #f1f5f9;font-weight:700;width:50px;text-align:right;color:#0f172a">{cnt}</td>'
-        f'<td style="padding:11px 12px;border-bottom:1px solid #f1f5f9;width:180px">'
-        f'  {_bar(cnt, total, cat_colors[i % len(cat_colors)])}'
-        f'  <span style="font-size:11px;color:#94a3b8;font-weight:500">{_pct(cnt,total)}</span></td>'
-        f'</tr>'
-        for i, (cat, cnt) in enumerate(sorted(by_category.items(), key=lambda x: -x[1]))
-    )
-    category_section = (
-        _section_heading("Topic Breakdown", ICON_TOPIC) +
-        f'<table style="width:100%;border-collapse:collapse;background:#f8fafc;border-radius:8px;overflow:hidden">'
-        f'{cat_rows}</table>'
-    )
-
-    # ── AGENT LEADERBOARD ────────────────────────────────────────────────────
-    RANK_COLORS = ["#f59e0b", "#94a3b8", "#b45309"]
-    agent_rows_html = ""
+    # ── AGENT LEADERBOARD ─────────────────────────────────────────────────────
+    agent_section = ""
     if by_agent_closed:
-        sorted_agents = sorted(by_agent_closed.items(), key=lambda x: -x[1])
-        for rank, (agent, closed) in enumerate(sorted_agents, 1):
-            avg_parts = round(sum(by_agent_parts.get(agent, [0])) / max(len(by_agent_parts.get(agent, [1])), 1))
+        agent_rows_html = ""
+        for rank, (agent, closed) in enumerate(sorted(by_agent_closed.items(), key=lambda x: -x[1]), 1):
+            avg_p = round(sum(by_agent_parts.get(agent, [0])) / max(len(by_agent_parts.get(agent, [1])), 1))
             reopens = by_agent_reopened.get(agent, 0)
-            rank_color = RANK_COLORS[rank-1] if rank <= 3 else "#64748b"
-            rank_label = ["1st","2nd","3rd"][rank-1] if rank <= 3 else f"#{rank}"
-            row_bg = "#f0fdf4" if rank == 1 else ("#fafafa" if rank % 2 == 0 else "#ffffff")
+            rank_colors = [D_YELLOW, "#94a3b8", "#b45309"]
+            rank_color  = rank_colors[rank-1] if rank <= 3 else D_MUTED
+            rank_labels = ["1st", "2nd", "3rd"]
+            rank_label  = rank_labels[rank-1] if rank <= 3 else f"#{rank}"
+            row_bg = D_CARD if rank % 2 == 1 else D_CARD2
             agent_rows_html += (
                 f'<tr style="background:{row_bg}">'
-                f'<td style="padding:13px 16px;border-bottom:1px solid #f1f5f9">'
-                f'  <span style="display:inline-block;background:{rank_color};color:#fff;font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px;margin-right:8px;letter-spacing:0.5px">{rank_label}</span>'
-                f'  <span style="font-weight:600;color:#0f172a;font-size:13px">{agent}</span></td>'
-                f'<td style="padding:13px 16px;border-bottom:1px solid #f1f5f9;text-align:center">'
-                f'  <span style="background:#dcfce7;color:#15803d;padding:4px 12px;border-radius:20px;font-weight:700;font-size:13px">{closed}</span></td>'
-                f'<td style="padding:13px 16px;border-bottom:1px solid #f1f5f9;text-align:center;color:#64748b;font-size:13px">{avg_parts}</td>'
-                f'<td style="padding:13px 16px;border-bottom:1px solid #f1f5f9;text-align:center">'
-                f'  <span style="color:{"#dc2626" if reopens > 0 else "#15803d"};font-weight:600;font-size:13px">{reopens}</span></td>'
+                f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER}">'
+                f'<span style="background:{rank_color};color:#000;font-size:10px;font-weight:700;padding:2px 6px;border-radius:3px;margin-right:8px">{rank_label}</span>'
+                f'<span style="color:{D_TEXT};font-size:13px;font-weight:600">{agent}</span></td>'
+                f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};text-align:center">'
+                f'<span style="background:#14532d;color:{D_GREEN};padding:3px 10px;border-radius:12px;font-size:13px;font-weight:700">{closed}</span></td>'
+                f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};text-align:center;color:{D_MUTED};font-size:13px">{avg_p}</td>'
+                f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};text-align:center;'
+                f'color:{D_RED if reopens > 0 else D_GREEN};font-size:13px;font-weight:600">{reopens}</td>'
                 f'</tr>'
             )
         agent_section = (
-            _section_heading("Agent Performance", ICON_AGENTS) +
-            f'<table style="width:100%;border-collapse:collapse;border-radius:8px;overflow:hidden">'
-            f'<thead><tr style="background:#f1f5f9">'
-            f'<th style="padding:10px 16px;text-align:left;font-size:11px;color:#64748b;font-weight:700;text-transform:uppercase;letter-spacing:0.5px">Agent</th>'
-            f'<th style="padding:10px 16px;text-align:center;font-size:11px;color:#64748b;font-weight:700;text-transform:uppercase;letter-spacing:0.5px">Closed</th>'
-            f'<th style="padding:10px 16px;text-align:center;font-size:11px;color:#64748b;font-weight:700;text-transform:uppercase;letter-spacing:0.5px">Avg. Exchanges</th>'
-            f'<th style="padding:10px 16px;text-align:center;font-size:11px;color:#64748b;font-weight:700;text-transform:uppercase;letter-spacing:0.5px">Reopens</th>'
-            f'</tr></thead>'
-            f'<tbody>{agent_rows_html}</tbody></table>'
+            _dark_section("AGENT LEADERBOARD") +
+            f'<table style="width:100%;border-collapse:collapse;border-radius:8px;overflow:hidden;margin-bottom:24px">'
+            f'<thead><tr style="background:{D_CARD2}">'
+            f'<th style="padding:10px 14px;text-align:left;font-size:10px;color:{D_MUTED};font-weight:700;text-transform:uppercase;letter-spacing:0.8px">Agent</th>'
+            f'<th style="padding:10px 14px;text-align:center;font-size:10px;color:{D_MUTED};font-weight:700;text-transform:uppercase;letter-spacing:0.8px">Closed</th>'
+            f'<th style="padding:10px 14px;text-align:center;font-size:10px;color:{D_MUTED};font-weight:700;text-transform:uppercase;letter-spacing:0.8px">Avg Exchanges</th>'
+            f'<th style="padding:10px 14px;text-align:center;font-size:10px;color:{D_MUTED};font-weight:700;text-transform:uppercase;letter-spacing:0.8px">Reopens</th>'
+            f'</tr></thead><tbody>{agent_rows_html}</tbody></table>'
         )
-    else:
-        agent_section = ""
 
-    # ── KEY OBSERVATIONS ─────────────────────────────────────────────────────
-    observations: List[str] = []
-    top_cat = max(by_category, key=by_category.get) if by_category else None
-    if top_cat:
-        observations.append(
-            f"<strong>{top_cat}</strong> was the top issue "
-            f"({by_category[top_cat]} conversations, {_pct(by_category[top_cat], total)})."
+    # ── FIN / BOT HANDLING ────────────────────────────────────────────────
+    fin_closed = 0
+    human_closed = 0
+    fin_conv_ids: List[str] = []      # IDs of FIN-closed conversations
+    unhandled_conv_ids: List[str] = [] # IDs of completely unhandled convs
+    for s in summaries:
+        agent_id = s.get("closed_by_id", "")
+        agent_name = ADMIN_MAP.get(agent_id, "").lower() if agent_id else ""
+        is_fin = any(k in agent_name for k in FIN_KEYWORDS)
+        if s["state"] == "closed":
+            if is_fin:
+                fin_closed += 1
+                if s.get("id"):
+                    fin_conv_ids.append(str(s["id"]))
+            elif agent_id:
+                human_closed += 1
+        if not s.get("was_handled") and s.get("id"):
+            unhandled_conv_ids.append(str(s["id"]))
+    fin_pct   = round(fin_closed / closed_count * 100)   if closed_count else 0
+    human_pct = round(human_closed / closed_count * 100) if closed_count else 0
+
+    def _conv_pills(ids: List[str], color: str, bg: str, limit: int = 20) -> str:
+        """Render conversation IDs as clickable pills."""
+        if not ids:
+            return f'<span style="font-size:12px;color:{D_MUTED}">None found</span>'
+        shown = ids[:limit]
+        st = f"display:inline-block;margin:3px 3px 3px 0;padding:3px 9px;background:{bg};color:{color};border:1px solid {color};border-radius:16px;font-size:11px;font-weight:600;text-decoration:none"
+        pills = "".join(
+            f'<a href="https://app.intercom.com/a/inbox/{INTERCOM_APP_ID}/inbox/shared/all/conversation/{cid}" style="{st}">#{cid}</a>'
+            for cid in shown
         )
-    top_channel = max(by_channel, key=by_channel.get) if by_channel else None
-    if top_channel:
-        observations.append(
-            f"<strong>{_CHANNEL_LABELS.get(top_channel, top_channel.title())}</strong> was the main channel "
-            f"({by_channel[top_channel]}, {_pct(by_channel[top_channel], total)})."
-        )
-    if unhandled > 0:
-        observations.append(
-            f"<span style='color:#dc2626'><strong>{unhandled} conversation{'s' if unhandled!=1 else ''} received no admin response</strong></span> — needs immediate attention."
-        )
+        extra = f'<span style="font-size:11px;color:{D_MUTED}"> +{len(ids)-limit} more</span>' if len(ids) > limit else ""
+        return pills + extra
+
+    fin_section = (
+        _dark_section("FIN AI vs HUMAN HANDLING") +
+        f'<table style="width:100%;border-collapse:collapse;margin-bottom:0"><tr>'
+        f'<td style="width:33%;padding:12px 8px 12px 0;vertical-align:top">'
+        f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:8px;padding:18px;box-shadow:0 1px 3px rgba(0,0,0,0.06)">'
+        f'<div style="font-size:11px;color:{D_MUTED};margin-bottom:6px">FIN / Bot closed</div>'
+        f'<div style="font-size:28px;font-weight:700;color:{D_PURPLE}">{fin_closed}</div>'
+        f'<div style="font-size:11px;color:{D_MUTED};margin-top:4px">{fin_pct}% of closed</div>'
+        f'</div></td>'
+        f'<td style="width:33%;padding:12px 4px;vertical-align:top">'
+        f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:8px;padding:18px;box-shadow:0 1px 3px rgba(0,0,0,0.06)">'
+        f'<div style="font-size:11px;color:{D_MUTED};margin-bottom:6px">Human team closed</div>'
+        f'<div style="font-size:28px;font-weight:700;color:{D_GREEN}">{human_closed}</div>'
+        f'<div style="font-size:11px;color:{D_MUTED};margin-top:4px">{human_pct}% of closed</div>'
+        f'</div></td>'
+        f'<td style="width:33%;padding:12px 0 12px 8px;vertical-align:top">'
+        f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:8px;padding:18px;box-shadow:0 1px 3px rgba(0,0,0,0.06)">'
+        f'<div style="font-size:11px;color:{D_MUTED};margin-bottom:6px">Reopened after close</div>'
+        f'<div style="font-size:28px;font-weight:700;color:{D_YELLOW}">{reopened_total}</div>'
+        f'<div style="font-size:11px;color:{D_MUTED};margin-top:4px">needed follow-up</div>'
+        f'</div></td>'
+        f'</tr></table>'
+        # FIN-closed conversation links
+        f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:8px;padding:16px 18px;margin:10px 0 0 0;box-shadow:0 1px 3px rgba(0,0,0,0.06)">'
+        f'<div style="font-size:10px;font-weight:700;color:{D_MUTED};text-transform:uppercase;letter-spacing:1px;margin-bottom:10px">'
+        f'FIN-closed conversations &mdash; review these</div>'
+        f'{_conv_pills(fin_conv_ids, D_PURPLE, "#2d2348")}'
+        f'</div>'
+        # Unhandled conversation links
+        f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:8px;padding:16px 18px;margin:10px 0 24px 0">'
+        f'<div style="font-size:10px;font-weight:700;color:{D_MUTED};text-transform:uppercase;letter-spacing:1px;margin-bottom:10px">'
+        f'Unhandled conversations (no team response) &mdash; action needed</div>'
+        f'{_conv_pills(unhandled_conv_ids, D_RED, "#2d1f1f")}'
+        f'</div>'
+    )
+
+    # ── KEY QUESTIONS ──────────────────────────────────────────────────────
+    top_cat    = max(by_category, key=by_category.get) if by_category else "N/A"
+    top_ch     = _CHANNEL_LABELS.get(max(by_channel, key=by_channel.get), "N/A") if by_channel else "N/A"
+    top_agent  = max(by_agent_closed, key=by_agent_closed.get) if by_agent_closed else None
+    questions = [
+        ("What drove the most volume?",
+         f"<strong>{top_cat}</strong> was the top category ({by_category.get(top_cat,0)} conversations). Review if FAQs or automations could deflect these."),
+        ("Are open conversations being followed up?",
+         f"<strong>{open_count} conversations</strong> are still open. Ensure each has an owner before end of day."),
+        ("Is FIN resolving or escalating correctly?",
+         f"FIN closed <strong>{fin_closed}</strong> conversations ({fin_pct}%). Check if FIN-closed tickets match expected resolution topics."),
+        ("Which channel needs more coverage?",
+         f"<strong>{top_ch}</strong> was the busiest channel. Ensure staffing matches volume for this channel."),
+    ]
+    if top_agent:
+        questions.append(("Who led the team today?",
+            f"<strong>{top_agent}</strong> closed the most conversations ({by_agent_closed[top_agent]}). Recognise and replicate their approach."))
     if reopened_total > 0:
-        observations.append(
-            f"{reopened_total} conversation{'s were' if reopened_total!=1 else ' was'} reopened — first resolutions may need review."
-        )
-    if high_reply:
-        observations.append(
-            f"{len(high_reply)} complex case{'s' if len(high_reply)!=1 else ''} required 10+ message parts."
-        )
-    if resolution_rate == 100:
-        observations.append("<span style='color:#16a34a'><strong>100% resolution rate</strong> — outstanding team performance today!</span>")
-    elif open_count > total * 0.3:
-        observations.append(
-            f"<span style='color:#d97706'><strong>{_pct(open_count,total)} of conversations still open</strong> — consider follow-up capacity.</span>"
-        )
-    if by_agent_closed:
-        top_agent = max(by_agent_closed, key=by_agent_closed.get)
-        observations.append(f"Top performer today: <strong>{top_agent}</strong> closed {by_agent_closed[top_agent]} conversations.")
+        questions.append(("Why are conversations being reopened?",
+            f"<strong>{reopened_total} conversations</strong> were reopened. Review for incomplete resolutions or customer follow-ups."))
 
-    obs_html = "".join(
-        f'<tr><td style="padding:11px 16px;border-bottom:1px solid #f1f5f9;font-size:13px;color:#1e293b">'
-        f'<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#3b82f6;margin-right:10px;vertical-align:middle"></span>'
-        f'{o}</td></tr>'
-        for o in observations
+    q_rows = "".join(
+        f'<tr>'
+        f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};vertical-align:top;width:38%">'
+        f'<span style="color:{D_BLUE};font-size:12px;font-weight:600">{q}</span></td>'
+        f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};color:{D_TEXT};font-size:12px">{a}</td>'
+        f'</tr>'
+        for q, a in questions
     )
-    observations_section = (
-        _section_heading("Key Insights", ICON_INSIGHTS) +
-        f'<table style="width:100%;border-collapse:collapse;background:#f8fafc;border-radius:8px;overflow:hidden">{obs_html}</table>'
+    questions_section = (
+        _dark_section("KEY QUESTIONS FOR TODAY") +
+        f'<table style="width:100%;border-collapse:collapse;background:{D_CARD};border-radius:8px;overflow:hidden;margin-bottom:24px">{q_rows}</table>'
     )
 
-    return stat_cards + channel_section + category_section + agent_section + observations_section
+    return row1 + row2 + channel_section + category_section + team_section + fin_section + agent_section + questions_section
 
 
 # ─── Email sender ─────────────────────────────────────────────────────────────
@@ -504,23 +592,27 @@ def send_report_email(subject: str, html_body: str) -> bool:
     msg = MIMEMultipart("alternative")
     msg["From"] = formataddr((SENDER_DISPLAY, SENDER_ADDRESS))
     msg["To"] = ", ".join(REPORT_RECIPIENTS)
+    if REPORT_CC:
+        msg["Cc"] = ", ".join(REPORT_CC)
     msg["Subject"] = subject
     msg.attach(MIMEText(html_body, "html"))
+
+    all_recipients = REPORT_RECIPIENTS + REPORT_CC
 
     try:
         if SMTP_PORT == 465:
             with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=30) as server:
                 server.login(SENDER_ADDRESS, SENDER_PASSWORD)
-                server.sendmail(SENDER_ADDRESS, REPORT_RECIPIENTS, msg.as_string())
+                server.sendmail(SENDER_ADDRESS, all_recipients, msg.as_string())
         else:
             with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as server:
                 server.ehlo()
                 server.starttls()
                 server.ehlo()
                 server.login(SENDER_ADDRESS, SENDER_PASSWORD)
-                server.sendmail(SENDER_ADDRESS, REPORT_RECIPIENTS, msg.as_string())
+                server.sendmail(SENDER_ADDRESS, all_recipients, msg.as_string())
 
-        logger.info(f"Report email sent to: {REPORT_RECIPIENTS}")
+        logger.info(f"Report email sent to: {REPORT_RECIPIENTS}, cc: {REPORT_CC}")
         return True
     except Exception as exc:
         logger.error(f"Failed to send report email: {exc}")
@@ -559,58 +651,50 @@ def run_daily_report():
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>FTUK Support Report</title>
 </head>
-<body style="margin:0;padding:0;background:#f1f5f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased">
-<table width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;padding:40px 20px">
+<body style="margin:0;padding:0;background:{D_BG};font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;color:{D_TEXT}">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:{D_BG};padding:32px 16px">
 <tr><td align="center">
 <table width="660" cellpadding="0" cellspacing="0" style="max-width:660px;width:100%">
 
-  <!-- TOP BAR -->
+  <!-- HEADER -->
   <tr>
-    <td style="background:#0f172a;border-radius:12px 12px 0 0;padding:0">
-      <table width="100%" cellpadding="0" cellspacing="0">
-        <tr>
-          <td style="padding:24px 32px 0 32px">
-            <div style="font-size:10px;color:#3b82f6;font-weight:700;text-transform:uppercase;letter-spacing:2px">FTUK Funded Trading</div>
-          </td>
-        </tr>
-        <tr>
-          <td style="padding:8px 32px 0 32px">
-            <div style="font-size:24px;font-weight:800;color:#ffffff;letter-spacing:-0.5px">Customer Support Report</div>
-          </td>
-        </tr>
-        <tr>
-          <td style="padding:6px 32px 0 32px">
-            <div style="font-size:13px;color:#64748b">{date_label}</div>
-          </td>
-        </tr>
-        <!-- accent stripe -->
-        <tr>
-          <td style="padding:20px 0 0 0">
-            <table width="100%" cellpadding="0" cellspacing="0"><tr>
-              <td style="height:4px;background:#3b82f6;width:33.3%"></td>
-              <td style="height:4px;background:#8b5cf6;width:33.3%"></td>
-              <td style="height:4px;background:#10b981;width:33.4%"></td>
-            </tr></table>
-          </td>
-        </tr>
-      </table>
+    <td style="padding:0 0 20px 0">
+      <table width="100%" cellpadding="0" cellspacing="0"><tr>
+        <td>
+          <div style="font-size:10px;font-weight:700;color:{D_BLUE};text-transform:uppercase;letter-spacing:2px;margin-bottom:6px">FTUK Intercom Report</div>
+          <div style="font-size:22px;font-weight:800;color:{D_TEXT};letter-spacing:-0.3px">Customer Support Report</div>
+          <div style="font-size:13px;color:{D_MUTED};margin-top:4px">{date_label} &mdash; full day</div>
+        </td>
+        <td align="right" style="vertical-align:top">
+          <div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:6px;padding:10px 14px;text-align:center">
+            <div style="font-size:9px;color:{D_MUTED};text-transform:uppercase;letter-spacing:1px">Generated</div>
+            <div style="font-size:11px;color:{D_TEXT};font-weight:600;margin-top:2px">{generated_at}</div>
+          </div>
+        </td>
+      </tr></table>
+      <!-- colour bar -->
+      <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:14px"><tr>
+        <td style="height:3px;background:{D_BLUE};width:33%"></td>
+        <td style="height:3px;background:{D_PURPLE};width:33%"></td>
+        <td style="height:3px;background:{D_GREEN};width:34%"></td>
+      </tr></table>
     </td>
   </tr>
 
   <!-- CONTENT -->
   <tr>
-    <td style="background:#ffffff;border-left:1px solid #e2e8f0;border-right:1px solid #e2e8f0;padding:32px 32px 16px 32px">
+    <td style="background:{D_BG};padding:0">
       {report_body}
     </td>
   </tr>
 
   <!-- FOOTER -->
   <tr>
-    <td style="background:#f8fafc;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 12px 12px;padding:16px 32px">
+    <td style="padding:24px 0 0 0;border-top:1px solid {D_BORDER}">
       <table width="100%" cellpadding="0" cellspacing="0"><tr>
-        <td style="font-size:11px;color:#94a3b8">Generated {generated_at}</td>
+        <td style="font-size:11px;color:{D_MUTED}">Generated {generated_at} &middot; FTUK Intercom MCP</td>
         <td align="right" style="font-size:11px">
-          <a href="https://app.intercom.com" style="color:#3b82f6;text-decoration:none;font-weight:500">Open Intercom &rarr;</a>
+          <a href="https://app.intercom.com" style="color:{D_BLUE};text-decoration:none">Open Intercom &rarr;</a>
         </td>
       </tr></table>
     </td>
