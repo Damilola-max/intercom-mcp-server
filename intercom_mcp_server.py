@@ -658,15 +658,19 @@ class SSEHandler(BaseHTTPRequestHandler):
         msg_id = message.get("id")
 
         if method == "initialize":
+            client_version = message.get("params", {}).get("protocolVersion", "2024-11-05")
             return {
                 "jsonrpc": "2.0",
                 "id": msg_id,
                 "result": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
+                    "protocolVersion": client_version,
+                    "capabilities": {"tools": {}},
                     "serverInfo": {"name": "intercom-mcp", "version": "1.0.0"},
                 },
             }
+
+        if method == "notifications/initialized":
+            return None
 
         if method == "tools/list":
             tools_list = [
@@ -691,6 +695,9 @@ class SSEHandler(BaseHTTPRequestHandler):
                     "content": [{"type": "text", "text": json.dumps(result, indent=2, default=str)}]
                 },
             }
+
+        if method.startswith("notifications/"):
+            return None
 
         return None
 

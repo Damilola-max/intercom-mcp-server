@@ -120,6 +120,20 @@ def run_bridge():
             sys.stdout.flush()
             continue
 
+        # Notifications have no "id" — fire and forget, no response expected
+        if "id" not in payload:
+            import time
+            for _ in range(50):
+                if _message_endpoint:
+                    break
+                time.sleep(0.1)
+            if _message_endpoint:
+                try:
+                    _session.post(_message_endpoint, json=payload, timeout=10)
+                except Exception:
+                    pass
+            continue
+
         response = _send(payload)
         if response is not None:
             sys.stdout.write(json.dumps(response) + "\n")
