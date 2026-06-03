@@ -21,7 +21,6 @@ Environment Variables (see .env.example):
 
 import os
 import sys
-import json
 import logging
 import smtplib
 import time
@@ -72,15 +71,31 @@ INTERCOM_APP_ID: str = os.getenv("INTERCOM_APP_ID", "lhjtrulf")
 # Known agents — fallback map (updated by fetch_admins at runtime)
 ADMIN_MAP: Dict[str, str] = {
     "8770830": "Nick Quinn",
-    "8770831": "Bot / Assistant",
+    "8770831": "FTUK's Assistant",
     "8889691": "Dami",
     "9022355": "ReZa",
     "9023402": "Umar",
     "9030249": "Tom",
     "10383433": "Bradley",
-    "10384010": "Nanda",
+    "10384010": "James",
     "10390175": "Navin",
 }
+
+# Team map — id -> name
+TEAM_MAP: Dict[str, str] = {
+    "8892866": "Support",
+    "8892873": "Payment/Order Issue",
+    "8892885": "Incoming Emails",
+    "8892896": "Level 2 Support",
+    "8892904": "Partnerships & Affiliates",
+    "8999577": "Payout",
+    "9078615": "Unread Email",
+    "9078621": "Responded Email",
+}
+
+# Escalation tag IDs
+ESCALATION_TAG_IDS = {"13126646"}  # "Escalated emails"
+ESCALATION_TAG_NAME = "Escalated emails"
 
 # FIN bot identifiers — any admin name containing these strings is FIN
 FIN_KEYWORDS = ["fin", "bot", "assistant", "automated", "resolution bot"]
@@ -169,20 +184,33 @@ def fetch_conversations_for_date(target_date: datetime) -> List[Dict[str, Any]]:
 def summarise_conversation(conv: Dict[str, Any]) -> Dict[str, Any]:
     """Extract key fields from a raw conversation object."""
     source = conv.get("source", {})
-    stats = conv.get("statistics", {})
+    stats  = conv.get("statistics", {}) or {}
     assignee = conv.get("assignee", {}) or {}
+    team_assignee = conv.get("team_assignee", {}) or {}
+    rating_obj = conv.get("conversation_rating") or {}
+    ai_agent = conv.get("ai_agent") or {}
+    teammates = conv.get("teammates", {}) or {}
 
-    # Normalise Intercom source types
     raw_type = source.get("type", "unknown")
-    _TYPE_MAP = {
-        "conversation": "chat",
-        "email": "email",
-        "admin_initiated": "admin_initiated",
-    }
+    _TYPE_MAP = {"conversation": "chat", "email": "email", "admin_initiated": "admin_initiated"}
     channel = _TYPE_MAP.get(raw_type, raw_type)
 
-    # assignee: null in list/search endpoints — derive from last_closed_by_id presence
     assignee_name = (assignee.get("name") or "") if assignee else ""
+
+    tag_objs = conv.get("tags", {}).get("tags", []) or []
+    tag_names = [t.get("name", "") for t in tag_objs]
+    tag_ids   = {str(t.get("id", "")) for t in tag_objs}
+    is_escalated = bool(ESCALATION_TAG_IDS & tag_ids)
+
+    # teammates who participated (excluding FIN)
+    teammate_ids = [str(a.get("id", "")) for a in (teammates.get("admins") or [])]
+
+    # CSAT rating (1-5 or null)
+    csat = rating_obj.get("rating") if rating_obj else None
+    csat_teammate_id = str((rating_obj.get("teammate") or {}).get("id", ""))
+
+    closed_by_id = str(stats.get("last_closed_by_id") or "")
+    team_id      = str(team_assignee.get("id") or conv.get("team_assignee_id") or "")
 
     return {
         "id": conv.get("id"),
@@ -192,17 +220,29 @@ def summarise_conversation(conv: Dict[str, Any]) -> Dict[str, Any]:
         "created_at": conv.get("created_at"),
         "updated_at": conv.get("updated_at"),
         "assignee_name": assignee_name if assignee_name else "Unassigned",
+        "assignee_id": str(assignee.get("id") or ""),
+        "team_id": team_id,
         "was_handled": bool(stats.get("last_closed_by_id") or stats.get("first_admin_reply_at")),
-        "closed_by_id": str(stats.get("last_closed_by_id") or ""),
+        "closed_by_id": closed_by_id,
         "time_to_first_response": stats.get("time_to_admin_reply"),
-        "first_response_time": stats.get("time_to_admin_reply"),  # alias
+        "time_to_assignment": stats.get("time_to_assignment"),
         "time_to_close": stats.get("time_to_first_close"),
+        "time_to_last_close": stats.get("time_to_last_close"),
+        "median_time_to_reply": stats.get("median_time_to_reply"),
         "reopened_count": stats.get("count_reopens", 0),
         "reply_count": stats.get("count_conversation_parts", 0),
-        "tags": [t.get("name") for t in conv.get("tags", {}).get("tags", [])],
+        "count_assignments": stats.get("count_assignments", 0),
+        "tags": tag_names,
+        "tag_ids": tag_ids,
+        "is_escalated": is_escalated,
         "priority": conv.get("priority", "not_priority"),
         "read": conv.get("read", False),
         "first_message_preview": (source.get("body") or "")[:300],
+        "csat": csat,
+        "csat_teammate_id": csat_teammate_id,
+        "teammate_ids": teammate_ids,
+        "ai_agent_participated": bool(conv.get("ai_agent_participated")),
+        "ai_agent_resolution": (ai_agent.get("resolution_state") or "") if ai_agent else "",
     }
 
 
@@ -305,12 +345,22 @@ def build_report_html(summaries: List[Dict[str, Any]], report_date: datetime) ->
     by_agent_closed: Dict[str, int] = {}
     by_agent_reopened: Dict[str, int] = {}
     by_agent_parts: Dict[str, List[int]] = {}
+    by_agent_first_resp: Dict[str, List[float]] = {}
+    by_agent_median_resp: Dict[str, List[float]] = {}
+    by_agent_handled: Dict[str, int] = {}  # total convs touched (teammate)
+    by_agent_escalated: Dict[str, int] = {}
+    by_agent_csat: Dict[str, List[int]] = {}
     by_category: Dict[str, int] = {}
+    by_team: Dict[str, int] = {}
+    by_tag: Dict[str, int] = {}
     first_resp_times: List[float] = []
     close_times: List[float] = []
     got_response = 0
     unhandled = 0
     reopened_total = 0
+    escalated_total = 0
+    escalated_conv_ids: List[str] = []
+    multi_assigned_total = 0  # count_assignments > 1
 
     for s in summaries:
         by_state[s["state"]] = by_state.get(s["state"], 0) + 1
@@ -318,6 +368,18 @@ def build_report_html(summaries: List[Dict[str, Any]], report_date: datetime) ->
         by_channel[ch] = by_channel.get(ch, 0) + 1
         cat = _categorise(s.get("subject", ""), s.get("first_message_preview", ""))
         by_category[cat] = by_category.get(cat, 0) + 1
+
+        # team breakdown
+        tid = s.get("team_id", "")
+        if tid:
+            tname = TEAM_MAP.get(tid, f"Team {tid}")
+            by_team[tname] = by_team.get(tname, 0) + 1
+
+        # tags
+        for tag in (s.get("tags") or []):
+            if tag:
+                by_tag[tag] = by_tag.get(tag, 0) + 1
+
         if s.get("time_to_first_response"):
             first_resp_times.append(s["time_to_first_response"])
         if s.get("time_to_close"):
@@ -329,13 +391,39 @@ def build_report_html(summaries: List[Dict[str, Any]], report_date: datetime) ->
         reopens = s.get("reopened_count") or 0
         if reopens > 0:
             reopened_total += 1
+        if (s.get("count_assignments") or 0) > 1:
+            multi_assigned_total += 1
+        if s.get("is_escalated"):
+            escalated_total += 1
+            if s.get("id"):
+                escalated_conv_ids.append(str(s["id"]))
+
         parts = s.get("reply_count") or 0
         agent_id = s.get("closed_by_id", "")
         agent_name = ADMIN_MAP.get(agent_id, f"Agent {agent_id}") if agent_id else None
-        if agent_name and agent_name != "Bot / Assistant":
+        is_fin_agent = any(k in (agent_name or "").lower() for k in FIN_KEYWORDS)
+        if agent_name and not is_fin_agent:
             by_agent_closed[agent_name] = by_agent_closed.get(agent_name, 0) + 1
             by_agent_reopened[agent_name] = by_agent_reopened.get(agent_name, 0) + reopens
             by_agent_parts.setdefault(agent_name, []).append(parts)
+            if s.get("time_to_first_response"):
+                by_agent_first_resp.setdefault(agent_name, []).append(s["time_to_first_response"])
+            if s.get("median_time_to_reply"):
+                by_agent_median_resp.setdefault(agent_name, []).append(s["median_time_to_reply"])
+            if s.get("is_escalated"):
+                by_agent_escalated[agent_name] = by_agent_escalated.get(agent_name, 0) + 1
+
+        # CSAT attributed to teammate who received rating
+        if s.get("csat") and s.get("csat_teammate_id"):
+            csat_agent = ADMIN_MAP.get(s["csat_teammate_id"], "")
+            if csat_agent:
+                by_agent_csat.setdefault(csat_agent, []).append(int(s["csat"]))
+
+        # count all teammates who touched this conversation
+        for tid2 in (s.get("teammate_ids") or []):
+            tname2 = ADMIN_MAP.get(tid2, "")
+            if tname2 and not any(k in tname2.lower() for k in FIN_KEYWORDS):
+                by_agent_handled[tname2] = by_agent_handled.get(tname2, 0) + 1
 
     closed_count     = by_state.get("closed", 0)
     open_count       = by_state.get("open", 0)
@@ -348,7 +436,6 @@ def build_report_html(summaries: List[Dict[str, Any]], report_date: datetime) ->
     unhandled_pct    = 100 - handled_pct
 
     # ── ROW 1: top 4 metric cards ─────────────────────────────────────────────
-    snoozed_note = f'<div style="font-size:11px;color:{D_MUTED};margin-top:4px">+ {snoozed_count} snoozed</div>' if snoozed_count else ""
     open_note    = f'<div style="font-size:11px;color:{D_MUTED};margin-top:4px">+ {snoozed_count} snoozed</div>' if snoozed_count else ""
     closure_note = f'<div style="font-size:11px;color:{D_MUTED};margin-top:4px">{resolution_rate}% closure rate</div>'
     unassigned_note = f'<div style="font-size:11px;color:{D_MUTED};margin-top:4px">{round(unassigned_count/total*100) if total else 0}% of total</div>'
@@ -364,7 +451,7 @@ def build_report_html(summaries: List[Dict[str, Any]], report_date: datetime) ->
         )
 
     row1 = (
-        f'<table style="width:100%;border-collapse:collapse;margin:0 -6px 12px -6px"><tr>'
+        '<table style="width:100%;border-collapse:collapse;margin:0 -6px 12px -6px"><tr>'
         + _metric_card(str(total), "Total conversations", D_TEXT)
         + _metric_card(str(closed_count), "Closed", D_GREEN, closure_note)
         + _metric_card(str(open_count), "Open", D_RED, open_note)
@@ -374,12 +461,12 @@ def build_report_html(summaries: List[Dict[str, Any]], report_date: datetime) ->
 
     # ── ROW 2: response time cards ────────────────────────────────────────────
     row2 = (
-        f'<table style="width:100%;border-collapse:collapse;margin:0 -6px 24px -6px"><tr>'
+        '<table style="width:100%;border-collapse:collapse;margin:0 -6px 24px -6px"><tr>'
         + _metric_card(_fmt_seconds(avg_first_resp), "Avg first response", D_TEXT)
         + _metric_card(_fmt_seconds(avg_ttc), "Avg time to close", D_TEXT)
         + _metric_card(str(got_response), "Got a response",  D_BLUE,
                        f'<div style="font-size:11px;color:{D_MUTED};margin-top:4px">of {total} conversations</div>')
-        + f'<td style="width:25%;padding:0 6px"></td>'
+        + '<td style="width:25%;padding:0 6px"></td>'
         + "</tr></table>"
     )
 
@@ -578,7 +665,155 @@ def build_report_html(summaries: List[Dict[str, Any]], report_date: datetime) ->
         f'<table style="width:100%;border-collapse:collapse;background:{D_CARD};border-radius:8px;overflow:hidden;margin-bottom:24px">{q_rows}</table>'
     )
 
-    return row1 + row2 + channel_section + category_section + team_section + fin_section + agent_section + questions_section
+    # ── AGENT PERFORMANCE SCORECARD ───────────────────────────────────────────
+    # Merge all agents seen across closed + handled sets
+    all_scorecard_agents = sorted(
+        set(list(by_agent_closed.keys()) + list(by_agent_handled.keys())),
+        key=lambda a: -(by_agent_closed.get(a, 0) + by_agent_handled.get(a, 0))
+    )
+    scorecard_rows = ""
+    for rank, agent in enumerate(all_scorecard_agents, 1):
+        closed       = by_agent_closed.get(agent, 0)
+        handled      = by_agent_handled.get(agent, 0)
+        parts_list   = by_agent_parts.get(agent, [])
+        avg_parts    = round(sum(parts_list) / len(parts_list)) if parts_list else 0
+        frt_list     = by_agent_first_resp.get(agent, [])
+        avg_frt      = sum(frt_list) / len(frt_list) if frt_list else None
+        mtr_list     = by_agent_median_resp.get(agent, [])
+        avg_mtr      = sum(mtr_list) / len(mtr_list) if mtr_list else None
+        reopens      = by_agent_reopened.get(agent, 0)
+        escalated    = by_agent_escalated.get(agent, 0)
+        csat_list    = by_agent_csat.get(agent, [])
+        avg_csat     = round(sum(csat_list) / len(csat_list), 1) if csat_list else None
+        esc_rate     = round(escalated / closed * 100) if closed else 0
+        row_bg       = D_CARD if rank % 2 == 1 else D_CARD2
+        rank_colors  = [D_YELLOW, "#94a3b8", "#b45309"]
+        rank_color   = rank_colors[rank-1] if rank <= 3 else D_MUTED
+        rank_label   = ["1st","2nd","3rd"][rank-1] if rank <= 3 else f"#{rank}"
+        csat_str     = f"{avg_csat}/5" if avg_csat else "&mdash;"
+        csat_color   = D_GREEN if avg_csat and avg_csat >= 4 else (D_YELLOW if avg_csat else D_MUTED)
+        scorecard_rows += (
+            f'<tr style="background:{row_bg}">'
+            f'<td style="padding:11px 12px;border-bottom:1px solid {D_BORDER}">'
+            f'<span style="background:{rank_color};color:#000;font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;margin-right:6px">{rank_label}</span>'
+            f'<span style="color:{D_TEXT};font-size:12px;font-weight:600">{agent}</span></td>'
+            f'<td style="padding:11px 12px;border-bottom:1px solid {D_BORDER};text-align:center">'
+            f'<span style="background:#14532d;color:{D_GREEN};padding:2px 8px;border-radius:10px;font-size:12px;font-weight:700">{closed}</span></td>'
+            f'<td style="padding:11px 12px;border-bottom:1px solid {D_BORDER};text-align:center;color:{D_TEXT};font-size:12px">{handled}</td>'
+            f'<td style="padding:11px 12px;border-bottom:1px solid {D_BORDER};text-align:center;color:{D_BLUE};font-size:12px;font-weight:600">{_fmt_seconds(avg_frt)}</td>'
+            f'<td style="padding:11px 12px;border-bottom:1px solid {D_BORDER};text-align:center;color:{D_MUTED};font-size:12px">{_fmt_seconds(avg_mtr)}</td>'
+            f'<td style="padding:11px 12px;border-bottom:1px solid {D_BORDER};text-align:center;color:{D_MUTED};font-size:12px">{avg_parts}</td>'
+            f'<td style="padding:11px 12px;border-bottom:1px solid {D_BORDER};text-align:center;color:{D_RED if reopens > 0 else D_MUTED};font-size:12px">{reopens}</td>'
+            f'<td style="padding:11px 12px;border-bottom:1px solid {D_BORDER};text-align:center;color:{D_YELLOW if esc_rate > 0 else D_MUTED};font-size:12px">{esc_rate}%</td>'
+            f'<td style="padding:11px 12px;border-bottom:1px solid {D_BORDER};text-align:center;color:{csat_color};font-size:12px;font-weight:600">{csat_str}</td>'
+            f'</tr>'
+        )
+
+    def _th(label: str) -> str:
+        return f'<th style="padding:9px 12px;text-align:center;font-size:9px;color:{D_MUTED};font-weight:700;text-transform:uppercase;letter-spacing:0.8px;white-space:nowrap">{label}</th>'
+
+    scorecard_section = (
+        _dark_section("AGENT PERFORMANCE SCORECARD") +
+        f'<div style="overflow-x:auto;margin-bottom:24px">'
+        f'<table style="width:100%;border-collapse:collapse;min-width:620px">'
+        f'<thead><tr style="background:{D_CARD2}">'
+        f'<th style="padding:9px 12px;text-align:left;font-size:9px;color:{D_MUTED};font-weight:700;text-transform:uppercase;letter-spacing:0.8px">Agent</th>'
+        + _th("Closed") + _th("Touched") + _th("1st Resp") + _th("Median Resp") + _th("Avg Replies") + _th("Reopens") + _th("Esc Rate") + _th("CSAT") +
+        f'</tr></thead><tbody>{scorecard_rows}</tbody></table></div>'
+    ) if all_scorecard_agents else ""
+
+    # ── TEAM BREAKDOWN ────────────────────────────────────────────────────────
+    team_breakdown_section = ""
+    if by_team:
+        team_rows = ""
+        for tname, cnt in sorted(by_team.items(), key=lambda x: -x[1]):
+            team_rows += (
+                f'<tr>'
+                f'<td style="padding:9px 0;border-bottom:1px solid {D_BORDER};color:{D_TEXT};font-size:13px;width:200px">{tname}</td>'
+                f'<td style="padding:9px 16px;border-bottom:1px solid {D_BORDER};width:100%">{_dbar(cnt, total, D_TEAL)}</td>'
+                f'<td style="padding:9px 0;border-bottom:1px solid {D_BORDER};text-align:right;color:{D_MUTED};font-size:12px;white-space:nowrap">{cnt} ({round(cnt/total*100) if total else 0}%)</td>'
+                f'</tr>'
+            )
+        team_breakdown_section = (
+            _dark_section("CONVERSATIONS BY TEAM") +
+            f'<table style="width:100%;border-collapse:collapse;margin-bottom:24px">{team_rows}</table>'
+        )
+
+    # ── TAG ANALYTICS ─────────────────────────────────────────────────────────
+    tag_section = ""
+    if by_tag:
+        tag_colors = [D_BLUE, D_PURPLE, D_YELLOW, D_TEAL, D_RED, D_GREEN, "#f97316", D_MUTED]
+        tag_rows = ""
+        for i, (tag, cnt) in enumerate(sorted(by_tag.items(), key=lambda x: -x[1])[:15]):
+            color = tag_colors[i % len(tag_colors)]
+            tag_rows += (
+                f'<tr>'
+                f'<td style="padding:8px 0;border-bottom:1px solid {D_BORDER};font-size:12px;width:220px">'
+                f'<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:{color};margin-right:8px;vertical-align:middle"></span>'
+                f'<span style="color:{D_TEXT}">{tag}</span></td>'
+                f'<td style="padding:8px 12px;border-bottom:1px solid {D_BORDER};width:100%">{_dbar(cnt, total, color)}</td>'
+                f'<td style="padding:8px 0;border-bottom:1px solid {D_BORDER};text-align:right;color:{D_MUTED};font-size:12px">{cnt}</td>'
+                f'</tr>'
+            )
+        tag_section = (
+            _dark_section("TOP TAGS USED") +
+            f'<table style="width:100%;border-collapse:collapse;margin-bottom:24px">{tag_rows}</table>'
+        )
+
+    # ── ESCALATION TRACKING ───────────────────────────────────────────────────
+    esc_rate_overall = round(escalated_total / total * 100) if total else 0
+    multi_assign_pct = round(multi_assigned_total / total * 100) if total else 0
+    top_esc_agent    = max(by_agent_escalated, key=by_agent_escalated.get) if by_agent_escalated else None
+
+    esc_agent_rows = ""
+    for ag, cnt in sorted(by_agent_escalated.items(), key=lambda x: -x[1]):
+        esc_agent_rows += (
+            f'<tr>'
+            f'<td style="padding:8px 12px;border-bottom:1px solid {D_BORDER};color:{D_TEXT};font-size:12px">{ag}</td>'
+            f'<td style="padding:8px 12px;border-bottom:1px solid {D_BORDER};width:100%">{_dbar(cnt, escalated_total, D_YELLOW)}</td>'
+            f'<td style="padding:8px 12px;border-bottom:1px solid {D_BORDER};text-align:right;color:{D_YELLOW};font-size:12px;font-weight:600">{cnt}</td>'
+            f'</tr>'
+        )
+
+    escalation_section = (
+        _dark_section("ESCALATION & HANDOFF TRACKING") +
+        f'<table style="width:100%;border-collapse:collapse;margin-bottom:12px"><tr>'
+        f'<td style="width:33%;padding:10px 8px 10px 0;vertical-align:top">'
+        f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:8px;padding:16px">'
+        f'<div style="font-size:10px;color:{D_MUTED};margin-bottom:6px">Escalated conversations</div>'
+        f'<div style="font-size:26px;font-weight:700;color:{D_YELLOW}">{escalated_total}</div>'
+        f'<div style="font-size:11px;color:{D_MUTED};margin-top:4px">{esc_rate_overall}% of total</div>'
+        f'</div></td>'
+        f'<td style="width:33%;padding:10px 4px;vertical-align:top">'
+        f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:8px;padding:16px">'
+        f'<div style="font-size:10px;color:{D_MUTED};margin-bottom:6px">Multi-assigned (passed on)</div>'
+        f'<div style="font-size:26px;font-weight:700;color:{D_PURPLE}">{multi_assigned_total}</div>'
+        f'<div style="font-size:11px;color:{D_MUTED};margin-top:4px">{multi_assign_pct}% of total</div>'
+        f'</div></td>'
+        f'<td style="width:33%;padding:10px 0 10px 8px;vertical-align:top">'
+        f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:8px;padding:16px">'
+        f'<div style="font-size:10px;color:{D_MUTED};margin-bottom:6px">Most escalations by</div>'
+        f'<div style="font-size:18px;font-weight:700;color:{D_TEXT};margin-top:4px">{top_esc_agent or "&mdash;"}</div>'
+        f'<div style="font-size:11px;color:{D_MUTED};margin-top:4px">{by_agent_escalated.get(top_esc_agent,0) if top_esc_agent else 0} escalated</div>'
+        f'</div></td>'
+        f'</tr></table>'
+        + ((
+            f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:8px;padding:14px 16px;margin-bottom:6px">'
+            f'<div style="font-size:10px;font-weight:700;color:{D_MUTED};text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Escalations per agent</div>'
+            f'<table style="width:100%;border-collapse:collapse">{esc_agent_rows}</table>'
+            f'</div>'
+        ) if esc_agent_rows else "")
+        + f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:8px;padding:14px 16px;margin:10px 0 24px 0">'
+        f'<div style="font-size:10px;font-weight:700;color:{D_MUTED};text-transform:uppercase;letter-spacing:1px;margin-bottom:10px">Escalated conversation links</div>'
+        + _conv_pills(escalated_conv_ids[:20], D_YELLOW, "#2d2910") +
+        '</div>'
+    )
+
+    return (row1 + row2 + channel_section + category_section +
+            team_breakdown_section + tag_section +
+            team_section + fin_section +
+            scorecard_section + agent_section +
+            escalation_section + questions_section)
 
 
 # ─── Email sender ─────────────────────────────────────────────────────────────
