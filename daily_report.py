@@ -286,37 +286,60 @@ def _pct(part: int, total: int) -> str:
     return f"{round(part / total * 100)}%"
 
 
-# ── Dark dashboard helpers ───────────────────────────────────────────────────
+# ── Design system ───────────────────────────────────────────────────────────
 
-D_BG       = "#1a1f2e"   # page background
-D_CARD     = "#242938"   # card background
-D_CARD2    = "#2d3348"   # alternate / lighter card
-D_BORDER   = "#353b52"   # subtle border
-D_TEXT     = "#e2e8f0"   # primary text
-D_MUTED    = "#8892a4"   # secondary text
-D_GREEN    = "#4ade80"   # closed / good
-D_RED      = "#f87171"   # open / bad
+D_BG       = "#0f1117"   # deep page background
+D_SURFACE  = "#161b27"   # content surface
+D_CARD     = "#1e2433"   # card background
+D_CARD2    = "#252c3d"   # alternate card / table row
+D_CARD3    = "#2a3245"   # hover / accent card
+D_BORDER   = "#2e3650"   # subtle border
+D_BORDER2  = "#3d4a66"   # stronger border
+D_TEXT     = "#eef2f8"   # primary text
+D_TEXT2    = "#c8d0e0"   # secondary text
+D_MUTED    = "#7a859e"   # muted / labels
+D_GREEN    = "#34d399"   # success
+D_GREEN_BG = "#0d2e22"   # green card bg
+D_RED      = "#f87171"   # danger
+D_RED_BG   = "#2e1515"   # red card bg
 D_YELLOW   = "#fbbf24"   # warning
-D_BLUE     = "#60a5fa"   # info / email
-D_PURPLE   = "#a78bfa"   # chat / FIN
-D_TEAL     = "#34d399"   # admin-initiated
+D_YELLOW_BG= "#2e2410"   # yellow card bg
+D_BLUE     = "#60a5fa"   # primary accent
+D_BLUE_BG  = "#0f2040"   # blue card bg
+D_PURPLE   = "#a78bfa"   # FIN / AI
+D_PURPLE_BG= "#1e1535"   # purple card bg
+D_TEAL     = "#2dd4bf"   # team / channel
+D_TEAL_BG  = "#0a2825"   # teal card bg
+D_ORANGE   = "#fb923c"   # escalation
+D_ORANGE_BG= "#2e1a0a"   # orange card bg
+
+GRAD_HEADER = "linear-gradient(135deg,#1a2744 0%,#0f1117 60%,#1a1535 100%)"
 
 
-def _dark_section(title: str) -> str:
+def _dark_section(title: str, subtitle: str = "") -> str:
+    sub = f'<div style="font-size:11px;color:{D_MUTED};margin-top:3px">{subtitle}</div>' if subtitle else ""
     return (
-        f'<div style="font-size:10px;font-weight:700;color:{D_MUTED};text-transform:uppercase;'
-        f'letter-spacing:1.5px;padding:24px 0 10px 0;border-bottom:2px solid {D_BORDER};margin-bottom:4px">'
-        f'{title}</div>'
+        f'<div style="margin:32px 0 16px 0">'
+        f'<div style="display:inline-block;background:{D_BLUE};width:3px;height:16px;'
+        f'border-radius:2px;vertical-align:middle;margin-right:10px"></div>'
+        f'<span style="font-size:11px;font-weight:700;color:{D_TEXT};text-transform:uppercase;'
+        f'letter-spacing:2px;vertical-align:middle">{title}</span>'
+        f'{sub}</div>'
     )
 
 
-def _dbar(value: int, total: int, color: str = "#60a5fa") -> str:
+def _dbar(value: int, total: int, color: str = "#60a5fa", height: int = 4) -> str:
     pct = round(value / total * 100) if total else 0
     return (
-        f'<div style="background:#2d3348;border-radius:3px;height:5px;width:100%">'
-        f'<div style="background:{color};width:{pct}%;height:5px;border-radius:3px"></div>'
+        f'<div style="background:{D_CARD2};border-radius:99px;height:{height}px;width:100%">'
+        f'<div style="background:{color};width:{pct}%;height:{height}px;border-radius:99px'
+        f';box-shadow:0 0 6px {color}40"></div>'
         f'</div>'
     )
+
+
+def _badge(text: str, color: str, bg: str) -> str:
+    return f'<span style="display:inline-block;padding:2px 8px;background:{bg};color:{color};border-radius:99px;font-size:10px;font-weight:700;letter-spacing:0.5px">{text}</span>'
 
 
 def build_report_html(summaries: List[Dict[str, Any]], report_date: datetime) -> str:
@@ -435,130 +458,125 @@ def build_report_html(summaries: List[Dict[str, Any]], report_date: datetime) ->
     handled_pct      = round(got_response / total * 100) if total else 0
     unhandled_pct    = 100 - handled_pct
 
-    # ── ROW 1: top 4 metric cards ─────────────────────────────────────────────
-    open_note    = f'<div style="font-size:11px;color:{D_MUTED};margin-top:4px">+ {snoozed_count} snoozed</div>' if snoozed_count else ""
-    closure_note = f'<div style="font-size:11px;color:{D_MUTED};margin-top:4px">{resolution_rate}% closure rate</div>'
-    unassigned_note = f'<div style="font-size:11px;color:{D_MUTED};margin-top:4px">{round(unassigned_count/total*100) if total else 0}% of total</div>'
-
-    def _metric_card(value: str, label: str, value_color: str, note: str = "") -> str:
+    # ── METRIC CARDS ──────────────────────────────────────────────────────────
+    def _stat_card(value: str, label: str, accent: str, bg: str, sub: str = "") -> str:
+        sub_html = f'<div style="font-size:11px;color:{D_MUTED};margin-top:5px">{sub}</div>' if sub else ""
         return (
-            f'<td style="width:25%;padding:0 6px 0 6px;vertical-align:top">'
-            f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:8px;padding:18px 16px">'
-            f'<div style="font-size:11px;color:{D_MUTED};margin-bottom:8px;letter-spacing:0.3px">{label}</div>'
-            f'<div style="font-size:28px;font-weight:700;color:{value_color};line-height:1">{value}</div>'
-            f'{note}'
+            f'<td style="width:25%;padding:0 5px;vertical-align:top">'
+            f'<div style="background:{bg};border:1px solid {accent}30;border-left:3px solid {accent};'
+            f'border-radius:10px;padding:16px 14px 14px 14px">'
+            f'<div style="font-size:10px;font-weight:600;color:{D_MUTED};text-transform:uppercase;'
+            f'letter-spacing:1.2px;margin-bottom:10px">{label}</div>'
+            f'<div style="font-size:30px;font-weight:800;color:{accent};line-height:1;letter-spacing:-1px">{value}</div>'
+            f'{sub_html}'
             f'</div></td>'
         )
 
     row1 = (
-        '<table style="width:100%;border-collapse:collapse;margin:0 -6px 12px -6px"><tr>'
-        + _metric_card(str(total), "Total conversations", D_TEXT)
-        + _metric_card(str(closed_count), "Closed", D_GREEN, closure_note)
-        + _metric_card(str(open_count), "Open", D_RED, open_note)
-        + _metric_card(str(unassigned_count), "Unassigned", D_YELLOW, unassigned_note)
+        '<table style="width:100%;border-collapse:collapse;margin:0 -5px 8px -5px"><tr>'
+        + _stat_card(str(total),          "Total",      D_BLUE,   D_BLUE_BG)
+        + _stat_card(str(closed_count),   "Closed",     D_GREEN,  D_GREEN_BG,  f"{resolution_rate}% closure rate")
+        + _stat_card(str(open_count),     "Still Open", D_RED,    D_RED_BG,    f"{snoozed_count} snoozed" if snoozed_count else "")
+        + _stat_card(str(unassigned_count),"Unassigned", D_YELLOW, D_YELLOW_BG, f"{round(unassigned_count/total*100) if total else 0}% of total")
+        + "</tr></table>"
+    )
+    row2 = (
+        '<table style="width:100%;border-collapse:collapse;margin:0 -5px 28px -5px"><tr>'
+        + _stat_card(_fmt_seconds(avg_first_resp), "Avg 1st Response", D_TEAL,   D_TEAL_BG)
+        + _stat_card(_fmt_seconds(avg_ttc),        "Avg Time to Close",D_PURPLE, D_PURPLE_BG)
+        + _stat_card(f"{handled_pct}%",            "Handled by Team",  D_GREEN,  D_GREEN_BG,  f"{got_response} of {total}")
+        + _stat_card(f"{unhandled_pct}%",          "Unhandled",        D_RED,    D_RED_BG,    "no team response")
         + "</tr></table>"
     )
 
-    # ── ROW 2: response time cards ────────────────────────────────────────────
-    row2 = (
-        '<table style="width:100%;border-collapse:collapse;margin:0 -6px 24px -6px"><tr>'
-        + _metric_card(_fmt_seconds(avg_first_resp), "Avg first response", D_TEXT)
-        + _metric_card(_fmt_seconds(avg_ttc), "Avg time to close", D_TEXT)
-        + _metric_card(str(got_response), "Got a response",  D_BLUE,
-                       f'<div style="font-size:11px;color:{D_MUTED};margin-top:4px">of {total} conversations</div>')
-        + '<td style="width:25%;padding:0 6px"></td>'
-        + "</tr></table>"
-    )
+    # ── helper: a polished bar-table row ──────────────────────────────────────
+    def _bar_row(label: str, cnt: int, tot: int, color: str, extra: str = "", dot: bool = True) -> str:
+        pct_val = round(cnt / tot * 100) if tot else 0
+        dot_html = f'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{color};margin-right:8px;vertical-align:middle;flex-shrink:0"></span>' if dot else ""
+        return (
+            f'<tr>'
+            f'<td style="padding:11px 0 11px 0;border-bottom:1px solid {D_BORDER};white-space:nowrap;width:190px">'
+            f'{dot_html}<span style="color:{D_TEXT2};font-size:12px">{label}</span></td>'
+            f'<td style="padding:11px 14px 11px 14px;border-bottom:1px solid {D_BORDER};width:100%">{_dbar(cnt, tot, color)}</td>'
+            f'<td style="padding:11px 0;border-bottom:1px solid {D_BORDER};text-align:right;white-space:nowrap">'
+            f'<span style="font-weight:700;color:{D_TEXT};font-size:12px">{cnt}</span>'
+            f'<span style="color:{D_MUTED};font-size:11px;margin-left:4px">{pct_val}%</span>'
+            f'{(" " + extra) if extra else ""}</td>'
+            f'</tr>'
+        )
 
     # ── CONVERSATIONS BY CHANNEL ──────────────────────────────────────────────
     ch_rows = ""
     for ch, cnt in sorted(by_channel.items(), key=lambda x: -x[1]):
         color = _CH_COLORS.get(ch, D_MUTED)
         label = _CHANNEL_LABELS.get(ch, ch.replace("_", " ").title())
-        pct_val = round(cnt / total * 100) if total else 0
-        ch_rows += (
-            f'<tr>'
-            f'<td style="padding:10px 0;border-bottom:1px solid {D_BORDER};color:{D_TEXT};font-size:13px;width:160px">'
-            f'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{color};margin-right:8px;vertical-align:middle"></span>{label}</td>'
-            f'<td style="padding:10px 16px;border-bottom:1px solid {D_BORDER};width:100%">{_dbar(cnt, total, color)}</td>'
-            f'<td style="padding:10px 0;border-bottom:1px solid {D_BORDER};text-align:right;white-space:nowrap">'
-            f'<span style="font-weight:700;color:{D_TEXT};font-size:13px">{cnt}</span> '
-            f'<span style="color:{D_MUTED};font-size:12px">({pct_val}%)</span></td>'
-            f'</tr>'
-        )
+        ch_rows += _bar_row(label, cnt, total, color)
     channel_section = (
         _dark_section("CONVERSATIONS BY CHANNEL") +
-        f'<table style="width:100%;border-collapse:collapse;margin-bottom:24px">{ch_rows}</table>'
+        f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:10px;padding:4px 16px 0 16px;margin-bottom:24px">'
+        f'<table style="width:100%;border-collapse:collapse">{ch_rows}</table></div>'
     )
 
     # ── TOP ISSUES ────────────────────────────────────────────────────────────
     cat_rows = ""
     for i, (cat, cnt) in enumerate(sorted(by_category.items(), key=lambda x: -x[1])):
         color = _CAT_COLORS[i % len(_CAT_COLORS)]
-        cat_rows += (
-            f'<tr>'
-            f'<td style="padding:9px 0;border-bottom:1px solid {D_BORDER};color:{D_TEXT};font-size:13px;width:200px">{cat}</td>'
-            f'<td style="padding:9px 16px;border-bottom:1px solid {D_BORDER};width:100%">{_dbar(cnt, total, color)}</td>'
-            f'<td style="padding:9px 0;border-bottom:1px solid {D_BORDER};text-align:right;color:{D_MUTED};font-size:13px;white-space:nowrap">{cnt}</td>'
-            f'</tr>'
-        )
+        cat_rows += _bar_row(cat, cnt, total, color)
     category_section = (
-        _dark_section(f"TOP ISSUES (BY CATEGORY — SAMPLE OF {total})") +
-        f'<table style="width:100%;border-collapse:collapse;margin-bottom:24px">{cat_rows}</table>'
+        _dark_section("TOP ISSUES BY CATEGORY", f"{total} conversations sampled") +
+        f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:10px;padding:4px 16px 0 16px;margin-bottom:24px">'
+        f'<table style="width:100%;border-collapse:collapse">{cat_rows}</table></div>'
     )
 
-    # ── TEAM HANDLING ─────────────────────────────────────────────────────────
+    # ── TEAM HANDLING SUMMARY ─────────────────────────────────────────────────
     team_section = (
-        _dark_section("TEAM HANDLING") +
-        f'<table style="width:100%;border-collapse:collapse;margin-bottom:8px"><tr>'
-        f'<td style="width:50%;padding:16px 16px 16px 0;vertical-align:top">'
-        f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:8px;padding:20px">'
-        f'<div style="font-size:11px;color:{D_MUTED};margin-bottom:8px">Handled by team</div>'
-        f'<div style="font-size:32px;font-weight:700;color:{D_GREEN}">~{handled_pct}%</div>'
-        f'<div style="font-size:11px;color:{D_MUTED};margin-top:6px">of sampled conversations</div>'
+        _dark_section("TEAM HANDLING OVERVIEW") +
+        f'<table style="width:100%;border-collapse:collapse;margin-bottom:24px"><tr>'
+        f'<td style="width:50%;padding:0 6px 0 0;vertical-align:top">'
+        f'<div style="background:{D_GREEN_BG};border:1px solid {D_GREEN}30;border-left:3px solid {D_GREEN};border-radius:10px;padding:18px 16px">'
+        f'<div style="font-size:10px;font-weight:600;color:{D_MUTED};text-transform:uppercase;letter-spacing:1.2px;margin-bottom:8px">Handled by team</div>'
+        f'<div style="font-size:36px;font-weight:800;color:{D_GREEN};line-height:1;letter-spacing:-1px">~{handled_pct}%</div>'
+        f'<div style="font-size:11px;color:{D_MUTED};margin-top:6px">{got_response} conversations got a reply</div>'
         f'</div></td>'
-        f'<td style="width:50%;padding:16px 0 16px 0;vertical-align:top">'
-        f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:8px;padding:20px">'
-        f'<div style="font-size:11px;color:{D_MUTED};margin-bottom:8px">Unhandled / bot-only</div>'
-        f'<div style="font-size:32px;font-weight:700;color:{D_RED}">~{unhandled_pct}%</div>'
-        f'<div style="font-size:11px;color:{D_MUTED};margin-top:6px">no team member assigned</div>'
+        f'<td style="width:50%;padding:0 0 0 6px;vertical-align:top">'
+        f'<div style="background:{D_RED_BG};border:1px solid {D_RED}30;border-left:3px solid {D_RED};border-radius:10px;padding:18px 16px">'
+        f'<div style="font-size:10px;font-weight:600;color:{D_MUTED};text-transform:uppercase;letter-spacing:1.2px;margin-bottom:8px">Unhandled / bot-only</div>'
+        f'<div style="font-size:36px;font-weight:800;color:{D_RED};line-height:1;letter-spacing:-1px">~{unhandled_pct}%</div>'
+        f'<div style="font-size:11px;color:{D_MUTED};margin-top:6px">{unhandled} conversations with no team response</div>'
         f'</div></td>'
         f'</tr></table>'
     )
 
-    # ── AGENT LEADERBOARD ─────────────────────────────────────────────────────
+    # ── AGENT LEADERBOARD (quick close table) ─────────────────────────────────
     agent_section = ""
     if by_agent_closed:
         agent_rows_html = ""
         for rank, (agent, closed) in enumerate(sorted(by_agent_closed.items(), key=lambda x: -x[1]), 1):
-            avg_p = round(sum(by_agent_parts.get(agent, [0])) / max(len(by_agent_parts.get(agent, [1])), 1))
+            avg_p   = round(sum(by_agent_parts.get(agent, [0])) / max(len(by_agent_parts.get(agent, [1])), 1))
             reopens = by_agent_reopened.get(agent, 0)
-            rank_colors = [D_YELLOW, "#94a3b8", "#b45309"]
-            rank_color  = rank_colors[rank-1] if rank <= 3 else D_MUTED
-            rank_labels = ["1st", "2nd", "3rd"]
-            rank_label  = rank_labels[rank-1] if rank <= 3 else f"#{rank}"
-            row_bg = D_CARD if rank % 2 == 1 else D_CARD2
+            medal   = ["🥇","🥈","🥉"][rank-1] if rank <= 3 else f"#{rank}"
+            row_bg  = D_CARD if rank % 2 == 1 else D_CARD2
+            rp_color = D_RED if reopens > 0 else D_MUTED
             agent_rows_html += (
                 f'<tr style="background:{row_bg}">'
-                f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER}">'
-                f'<span style="background:{rank_color};color:#000;font-size:10px;font-weight:700;padding:2px 6px;border-radius:3px;margin-right:8px">{rank_label}</span>'
-                f'<span style="color:{D_TEXT};font-size:13px;font-weight:600">{agent}</span></td>'
-                f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};text-align:center">'
-                f'<span style="background:#14532d;color:{D_GREEN};padding:3px 10px;border-radius:12px;font-size:13px;font-weight:700">{closed}</span></td>'
-                f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};text-align:center;color:{D_MUTED};font-size:13px">{avg_p}</td>'
-                f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};text-align:center;'
-                f'color:{D_RED if reopens > 0 else D_GREEN};font-size:13px;font-weight:600">{reopens}</td>'
+                f'<td style="padding:11px 14px;border-bottom:1px solid {D_BORDER}">'
+                f'<span style="font-size:13px;margin-right:8px">{medal}</span>'
+                f'<span style="color:{D_TEXT};font-size:12px;font-weight:600">{agent}</span></td>'
+                f'<td style="padding:11px 14px;border-bottom:1px solid {D_BORDER};text-align:center">'
+                f'<span style="background:{D_GREEN_BG};color:{D_GREEN};padding:2px 10px;border-radius:99px;font-size:12px;font-weight:700;border:1px solid {D_GREEN}40">{closed}</span></td>'
+                f'<td style="padding:11px 14px;border-bottom:1px solid {D_BORDER};text-align:center;color:{D_MUTED};font-size:12px">{avg_p}</td>'
+                f'<td style="padding:11px 14px;border-bottom:1px solid {D_BORDER};text-align:center;color:{rp_color};font-size:12px;font-weight:600">{reopens}</td>'
                 f'</tr>'
             )
+        def _ath(label: str, align: str = "center") -> str:
+            return f'<th style="padding:10px 14px;text-align:{align};font-size:9px;color:{D_MUTED};font-weight:700;text-transform:uppercase;letter-spacing:1px;border-bottom:2px solid {D_BORDER2}">{label}</th>'
         agent_section = (
             _dark_section("AGENT LEADERBOARD") +
-            f'<table style="width:100%;border-collapse:collapse;border-radius:8px;overflow:hidden;margin-bottom:24px">'
+            f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:10px;overflow:hidden;margin-bottom:24px">'
+            f'<table style="width:100%;border-collapse:collapse">'
             f'<thead><tr style="background:{D_CARD2}">'
-            f'<th style="padding:10px 14px;text-align:left;font-size:10px;color:{D_MUTED};font-weight:700;text-transform:uppercase;letter-spacing:0.8px">Agent</th>'
-            f'<th style="padding:10px 14px;text-align:center;font-size:10px;color:{D_MUTED};font-weight:700;text-transform:uppercase;letter-spacing:0.8px">Closed</th>'
-            f'<th style="padding:10px 14px;text-align:center;font-size:10px;color:{D_MUTED};font-weight:700;text-transform:uppercase;letter-spacing:0.8px">Avg Exchanges</th>'
-            f'<th style="padding:10px 14px;text-align:center;font-size:10px;color:{D_MUTED};font-weight:700;text-transform:uppercase;letter-spacing:0.8px">Reopens</th>'
-            f'</tr></thead><tbody>{agent_rows_html}</tbody></table>'
+            + _ath("Agent", "left") + _ath("Closed") + _ath("Avg Replies") + _ath("Reopens") +
+            f'</tr></thead><tbody>{agent_rows_html}</tbody></table></div>'
         )
 
     # ── FIN / BOT HANDLING ────────────────────────────────────────────────
@@ -595,40 +613,33 @@ def build_report_html(summaries: List[Dict[str, Any]], report_date: datetime) ->
         extra = f'<span style="font-size:11px;color:{D_MUTED}"> +{len(ids)-limit} more</span>' if len(ids) > limit else ""
         return pills + extra
 
+    def _mini_card(label: str, value: str, accent: str, bg: str, sub: str = "") -> str:
+        sub_html = f'<div style="font-size:10px;color:{D_MUTED};margin-top:3px">{sub}</div>' if sub else ""
+        return (
+            f'<td style="width:33%;padding:0 5px;vertical-align:top">'
+            f'<div style="background:{bg};border:1px solid {accent}25;border-left:3px solid {accent};border-radius:10px;padding:14px 12px">'
+            f'<div style="font-size:9px;font-weight:600;color:{D_MUTED};text-transform:uppercase;letter-spacing:1px;margin-bottom:6px">{label}</div>'
+            f'<div style="font-size:26px;font-weight:800;color:{accent};letter-spacing:-0.5px;line-height:1">{value}</div>'
+            f'{sub_html}</div></td>'
+        )
+
+    def _pill_box(title: str, ids: List[str], color: str, bg: str, extra_style: str = "") -> str:
+        return (
+            f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-left:3px solid {color};'
+            f'border-radius:10px;padding:14px 16px;margin-top:10px{(";" + extra_style) if extra_style else ""}">' 
+            f'<div style="font-size:9px;font-weight:700;color:{color};text-transform:uppercase;letter-spacing:1.2px;margin-bottom:10px">{title}</div>'
+            f'{_conv_pills(ids, color, bg)}</div>'
+        )
+
     fin_section = (
         _dark_section("FIN AI vs HUMAN HANDLING") +
-        f'<table style="width:100%;border-collapse:collapse;margin-bottom:0"><tr>'
-        f'<td style="width:33%;padding:12px 8px 12px 0;vertical-align:top">'
-        f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:8px;padding:18px;box-shadow:0 1px 3px rgba(0,0,0,0.06)">'
-        f'<div style="font-size:11px;color:{D_MUTED};margin-bottom:6px">FIN / Bot closed</div>'
-        f'<div style="font-size:28px;font-weight:700;color:{D_PURPLE}">{fin_closed}</div>'
-        f'<div style="font-size:11px;color:{D_MUTED};margin-top:4px">{fin_pct}% of closed</div>'
-        f'</div></td>'
-        f'<td style="width:33%;padding:12px 4px;vertical-align:top">'
-        f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:8px;padding:18px;box-shadow:0 1px 3px rgba(0,0,0,0.06)">'
-        f'<div style="font-size:11px;color:{D_MUTED};margin-bottom:6px">Human team closed</div>'
-        f'<div style="font-size:28px;font-weight:700;color:{D_GREEN}">{human_closed}</div>'
-        f'<div style="font-size:11px;color:{D_MUTED};margin-top:4px">{human_pct}% of closed</div>'
-        f'</div></td>'
-        f'<td style="width:33%;padding:12px 0 12px 8px;vertical-align:top">'
-        f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:8px;padding:18px;box-shadow:0 1px 3px rgba(0,0,0,0.06)">'
-        f'<div style="font-size:11px;color:{D_MUTED};margin-bottom:6px">Reopened after close</div>'
-        f'<div style="font-size:28px;font-weight:700;color:{D_YELLOW}">{reopened_total}</div>'
-        f'<div style="font-size:11px;color:{D_MUTED};margin-top:4px">needed follow-up</div>'
-        f'</div></td>'
-        f'</tr></table>'
-        # FIN-closed conversation links
-        f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:8px;padding:16px 18px;margin:10px 0 0 0;box-shadow:0 1px 3px rgba(0,0,0,0.06)">'
-        f'<div style="font-size:10px;font-weight:700;color:{D_MUTED};text-transform:uppercase;letter-spacing:1px;margin-bottom:10px">'
-        f'FIN-closed conversations &mdash; review these</div>'
-        f'{_conv_pills(fin_conv_ids, D_PURPLE, "#2d2348")}'
-        f'</div>'
-        # Unhandled conversation links
-        f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:8px;padding:16px 18px;margin:10px 0 24px 0">'
-        f'<div style="font-size:10px;font-weight:700;color:{D_MUTED};text-transform:uppercase;letter-spacing:1px;margin-bottom:10px">'
-        f'Unhandled conversations (no team response) &mdash; action needed</div>'
-        f'{_conv_pills(unhandled_conv_ids, D_RED, "#2d1f1f")}'
-        f'</div>'
+        '<table style="width:100%;border-collapse:collapse;margin:0 -5px 0 -5px"><tr>'
+        + _mini_card("FIN / Bot Closed",   str(fin_closed),     D_PURPLE, D_PURPLE_BG, f"{fin_pct}% of closed")
+        + _mini_card("Human Team Closed",   str(human_closed),   D_GREEN,  D_GREEN_BG,  f"{human_pct}% of closed")
+        + _mini_card("Reopened After Close", str(reopened_total), D_YELLOW, D_YELLOW_BG, "needed follow-up")
+        + '</tr></table>'
+        + _pill_box("FIN-closed conversations — review these", fin_conv_ids, D_PURPLE, D_PURPLE_BG)
+        + _pill_box("Unhandled — no team response — action needed", unhandled_conv_ids, D_RED, D_RED_BG, "margin-bottom:24px")
     )
 
     # ── KEY QUESTIONS ──────────────────────────────────────────────────────
@@ -652,21 +663,19 @@ def build_report_html(summaries: List[Dict[str, Any]], report_date: datetime) ->
         questions.append(("Why are conversations being reopened?",
             f"<strong>{reopened_total} conversations</strong> were reopened. Review for incomplete resolutions or customer follow-ups."))
 
-    q_rows = "".join(
-        f'<tr>'
-        f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};vertical-align:top;width:38%">'
-        f'<span style="color:{D_BLUE};font-size:12px;font-weight:600">{q}</span></td>'
-        f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};color:{D_TEXT};font-size:12px">{a}</td>'
-        f'</tr>'
+    q_items = "".join(
+        f'<div style="border-bottom:1px solid {D_BORDER};padding:12px 0 12px 0">'
+        f'<div style="font-size:10px;font-weight:700;color:{D_BLUE};text-transform:uppercase;letter-spacing:1px;margin-bottom:4px">{q}</div>'
+        f'<div style="color:{D_TEXT2};font-size:12px;line-height:1.6">{a}</div>'
+        f'</div>'
         for q, a in questions
     )
     questions_section = (
         _dark_section("KEY QUESTIONS FOR TODAY") +
-        f'<table style="width:100%;border-collapse:collapse;background:{D_CARD};border-radius:8px;overflow:hidden;margin-bottom:24px">{q_rows}</table>'
+        f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:10px;padding:4px 16px 12px 16px;margin-bottom:24px">{q_items}</div>'
     )
 
     # ── AGENT PERFORMANCE SCORECARD ───────────────────────────────────────────
-    # Merge all agents seen across closed + handled sets
     all_scorecard_agents = sorted(
         set(list(by_agent_closed.keys()) + list(by_agent_handled.keys())),
         key=lambda a: -(by_agent_closed.get(a, 0) + by_agent_handled.get(a, 0))
@@ -687,38 +696,40 @@ def build_report_html(summaries: List[Dict[str, Any]], report_date: datetime) ->
         avg_csat     = round(sum(csat_list) / len(csat_list), 1) if csat_list else None
         esc_rate     = round(escalated / closed * 100) if closed else 0
         row_bg       = D_CARD if rank % 2 == 1 else D_CARD2
-        rank_colors  = [D_YELLOW, "#94a3b8", "#b45309"]
-        rank_color   = rank_colors[rank-1] if rank <= 3 else D_MUTED
-        rank_label   = ["1st","2nd","3rd"][rank-1] if rank <= 3 else f"#{rank}"
+        medals       = ["🥇","🥈","🥉"]
+        rank_label   = medals[rank-1] if rank <= 3 else f"#{rank}"
         csat_str     = f"{avg_csat}/5" if avg_csat else "&mdash;"
         csat_color   = D_GREEN if avg_csat and avg_csat >= 4 else (D_YELLOW if avg_csat else D_MUTED)
+        frt_color    = D_GREEN if avg_frt and avg_frt < 3600 else (D_YELLOW if avg_frt and avg_frt < 14400 else D_RED)
         scorecard_rows += (
             f'<tr style="background:{row_bg}">'
-            f'<td style="padding:11px 12px;border-bottom:1px solid {D_BORDER}">'
-            f'<span style="background:{rank_color};color:#000;font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;margin-right:6px">{rank_label}</span>'
-            f'<span style="color:{D_TEXT};font-size:12px;font-weight:600">{agent}</span></td>'
-            f'<td style="padding:11px 12px;border-bottom:1px solid {D_BORDER};text-align:center">'
-            f'<span style="background:#14532d;color:{D_GREEN};padding:2px 8px;border-radius:10px;font-size:12px;font-weight:700">{closed}</span></td>'
-            f'<td style="padding:11px 12px;border-bottom:1px solid {D_BORDER};text-align:center;color:{D_TEXT};font-size:12px">{handled}</td>'
-            f'<td style="padding:11px 12px;border-bottom:1px solid {D_BORDER};text-align:center;color:{D_BLUE};font-size:12px;font-weight:600">{_fmt_seconds(avg_frt)}</td>'
-            f'<td style="padding:11px 12px;border-bottom:1px solid {D_BORDER};text-align:center;color:{D_MUTED};font-size:12px">{_fmt_seconds(avg_mtr)}</td>'
-            f'<td style="padding:11px 12px;border-bottom:1px solid {D_BORDER};text-align:center;color:{D_MUTED};font-size:12px">{avg_parts}</td>'
-            f'<td style="padding:11px 12px;border-bottom:1px solid {D_BORDER};text-align:center;color:{D_RED if reopens > 0 else D_MUTED};font-size:12px">{reopens}</td>'
-            f'<td style="padding:11px 12px;border-bottom:1px solid {D_BORDER};text-align:center;color:{D_YELLOW if esc_rate > 0 else D_MUTED};font-size:12px">{esc_rate}%</td>'
-            f'<td style="padding:11px 12px;border-bottom:1px solid {D_BORDER};text-align:center;color:{csat_color};font-size:12px;font-weight:600">{csat_str}</td>'
+            f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER}">'
+            f'<span style="font-size:14px;margin-right:7px">{rank_label}</span>'
+            f'<span style="color:{D_TEXT};font-size:12px;font-weight:700">{agent}</span></td>'
+            f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};text-align:center">'
+            f'<span style="background:{D_GREEN_BG};color:{D_GREEN};padding:3px 10px;border-radius:99px;font-size:12px;font-weight:700;border:1px solid {D_GREEN}30">{closed}</span></td>'
+            f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};text-align:center;color:{D_TEXT2};font-size:12px">{handled}</td>'
+            f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};text-align:center;color:{frt_color};font-size:12px;font-weight:600">{_fmt_seconds(avg_frt)}</td>'
+            f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};text-align:center;color:{D_MUTED};font-size:12px">{_fmt_seconds(avg_mtr)}</td>'
+            f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};text-align:center;color:{D_MUTED};font-size:12px">{avg_parts}</td>'
+            f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};text-align:center;color:{D_RED if reopens > 0 else D_MUTED};font-size:12px;font-weight:{"700" if reopens > 0 else "400"}">{reopens}</td>'
+            f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};text-align:center;color:{D_ORANGE if esc_rate > 0 else D_MUTED};font-size:12px">{esc_rate}%</td>'
+            f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};text-align:center;color:{csat_color};font-size:12px;font-weight:600">{csat_str}</td>'
             f'</tr>'
         )
 
     def _th(label: str) -> str:
-        return f'<th style="padding:9px 12px;text-align:center;font-size:9px;color:{D_MUTED};font-weight:700;text-transform:uppercase;letter-spacing:0.8px;white-space:nowrap">{label}</th>'
+        return (f'<th style="padding:10px 14px;text-align:center;font-size:9px;color:{D_MUTED};'
+                f'font-weight:700;text-transform:uppercase;letter-spacing:1px;'
+                f'border-bottom:2px solid {D_BORDER2};white-space:nowrap">{label}</th>')
 
     scorecard_section = (
-        _dark_section("AGENT PERFORMANCE SCORECARD") +
-        f'<div style="overflow-x:auto;margin-bottom:24px">'
-        f'<table style="width:100%;border-collapse:collapse;min-width:620px">'
+        _dark_section("AGENT PERFORMANCE SCORECARD", "ranked by total activity") +
+        f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:10px;overflow:hidden;margin-bottom:24px">'
+        f'<table style="width:100%;border-collapse:collapse">'
         f'<thead><tr style="background:{D_CARD2}">'
-        f'<th style="padding:9px 12px;text-align:left;font-size:9px;color:{D_MUTED};font-weight:700;text-transform:uppercase;letter-spacing:0.8px">Agent</th>'
-        + _th("Closed") + _th("Touched") + _th("1st Resp") + _th("Median Resp") + _th("Avg Replies") + _th("Reopens") + _th("Esc Rate") + _th("CSAT") +
+        f'<th style="padding:10px 14px;text-align:left;font-size:9px;color:{D_MUTED};font-weight:700;text-transform:uppercase;letter-spacing:1px;border-bottom:2px solid {D_BORDER2}">Agent</th>'
+        + _th("Closed") + _th("Touched") + _th("1st Resp") + _th("Median Resp") + _th("Avg Msgs") + _th("Reopens") + _th("Esc Rate") + _th("CSAT") +
         f'</tr></thead><tbody>{scorecard_rows}</tbody></table></div>'
     ) if all_scorecard_agents else ""
 
@@ -727,37 +738,25 @@ def build_report_html(summaries: List[Dict[str, Any]], report_date: datetime) ->
     if by_team:
         team_rows = ""
         for tname, cnt in sorted(by_team.items(), key=lambda x: -x[1]):
-            team_rows += (
-                f'<tr>'
-                f'<td style="padding:9px 0;border-bottom:1px solid {D_BORDER};color:{D_TEXT};font-size:13px;width:200px">{tname}</td>'
-                f'<td style="padding:9px 16px;border-bottom:1px solid {D_BORDER};width:100%">{_dbar(cnt, total, D_TEAL)}</td>'
-                f'<td style="padding:9px 0;border-bottom:1px solid {D_BORDER};text-align:right;color:{D_MUTED};font-size:12px;white-space:nowrap">{cnt} ({round(cnt/total*100) if total else 0}%)</td>'
-                f'</tr>'
-            )
+            team_rows += _bar_row(tname, cnt, total, D_TEAL)
         team_breakdown_section = (
             _dark_section("CONVERSATIONS BY TEAM") +
-            f'<table style="width:100%;border-collapse:collapse;margin-bottom:24px">{team_rows}</table>'
+            f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:10px;padding:4px 16px 0 16px;margin-bottom:24px">'
+            f'<table style="width:100%;border-collapse:collapse">{team_rows}</table></div>'
         )
 
     # ── TAG ANALYTICS ─────────────────────────────────────────────────────────
     tag_section = ""
     if by_tag:
-        tag_colors = [D_BLUE, D_PURPLE, D_YELLOW, D_TEAL, D_RED, D_GREEN, "#f97316", D_MUTED]
+        tag_colors = [D_BLUE, D_PURPLE, D_YELLOW, D_TEAL, D_RED, D_GREEN, D_ORANGE, D_MUTED]
         tag_rows = ""
-        for i, (tag, cnt) in enumerate(sorted(by_tag.items(), key=lambda x: -x[1])[:15]):
+        for i, (tag, cnt) in enumerate(sorted(by_tag.items(), key=lambda x: -x[1])[:12]):
             color = tag_colors[i % len(tag_colors)]
-            tag_rows += (
-                f'<tr>'
-                f'<td style="padding:8px 0;border-bottom:1px solid {D_BORDER};font-size:12px;width:220px">'
-                f'<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:{color};margin-right:8px;vertical-align:middle"></span>'
-                f'<span style="color:{D_TEXT}">{tag}</span></td>'
-                f'<td style="padding:8px 12px;border-bottom:1px solid {D_BORDER};width:100%">{_dbar(cnt, total, color)}</td>'
-                f'<td style="padding:8px 0;border-bottom:1px solid {D_BORDER};text-align:right;color:{D_MUTED};font-size:12px">{cnt}</td>'
-                f'</tr>'
-            )
+            tag_rows += _bar_row(tag, cnt, total, color)
         tag_section = (
             _dark_section("TOP TAGS USED") +
-            f'<table style="width:100%;border-collapse:collapse;margin-bottom:24px">{tag_rows}</table>'
+            f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:10px;padding:4px 16px 0 16px;margin-bottom:24px">'
+            f'<table style="width:100%;border-collapse:collapse">{tag_rows}</table></div>'
         )
 
     # ── ESCALATION TRACKING ───────────────────────────────────────────────────
@@ -767,46 +766,22 @@ def build_report_html(summaries: List[Dict[str, Any]], report_date: datetime) ->
 
     esc_agent_rows = ""
     for ag, cnt in sorted(by_agent_escalated.items(), key=lambda x: -x[1]):
-        esc_agent_rows += (
-            f'<tr>'
-            f'<td style="padding:8px 12px;border-bottom:1px solid {D_BORDER};color:{D_TEXT};font-size:12px">{ag}</td>'
-            f'<td style="padding:8px 12px;border-bottom:1px solid {D_BORDER};width:100%">{_dbar(cnt, escalated_total, D_YELLOW)}</td>'
-            f'<td style="padding:8px 12px;border-bottom:1px solid {D_BORDER};text-align:right;color:{D_YELLOW};font-size:12px;font-weight:600">{cnt}</td>'
-            f'</tr>'
-        )
+        esc_agent_rows += _bar_row(ag, cnt, escalated_total or 1, D_ORANGE, dot=False)
 
     escalation_section = (
         _dark_section("ESCALATION & HANDOFF TRACKING") +
-        f'<table style="width:100%;border-collapse:collapse;margin-bottom:12px"><tr>'
-        f'<td style="width:33%;padding:10px 8px 10px 0;vertical-align:top">'
-        f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:8px;padding:16px">'
-        f'<div style="font-size:10px;color:{D_MUTED};margin-bottom:6px">Escalated conversations</div>'
-        f'<div style="font-size:26px;font-weight:700;color:{D_YELLOW}">{escalated_total}</div>'
-        f'<div style="font-size:11px;color:{D_MUTED};margin-top:4px">{esc_rate_overall}% of total</div>'
-        f'</div></td>'
-        f'<td style="width:33%;padding:10px 4px;vertical-align:top">'
-        f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:8px;padding:16px">'
-        f'<div style="font-size:10px;color:{D_MUTED};margin-bottom:6px">Multi-assigned (passed on)</div>'
-        f'<div style="font-size:26px;font-weight:700;color:{D_PURPLE}">{multi_assigned_total}</div>'
-        f'<div style="font-size:11px;color:{D_MUTED};margin-top:4px">{multi_assign_pct}% of total</div>'
-        f'</div></td>'
-        f'<td style="width:33%;padding:10px 0 10px 8px;vertical-align:top">'
-        f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:8px;padding:16px">'
-        f'<div style="font-size:10px;color:{D_MUTED};margin-bottom:6px">Most escalations by</div>'
-        f'<div style="font-size:18px;font-weight:700;color:{D_TEXT};margin-top:4px">{top_esc_agent or "&mdash;"}</div>'
-        f'<div style="font-size:11px;color:{D_MUTED};margin-top:4px">{by_agent_escalated.get(top_esc_agent,0) if top_esc_agent else 0} escalated</div>'
-        f'</div></td>'
-        f'</tr></table>'
-        + ((
-            f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:8px;padding:14px 16px;margin-bottom:6px">'
-            f'<div style="font-size:10px;font-weight:700;color:{D_MUTED};text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Escalations per agent</div>'
-            f'<table style="width:100%;border-collapse:collapse">{esc_agent_rows}</table>'
-            f'</div>'
+        '<table style="width:100%;border-collapse:collapse;margin:0 -5px 12px -5px"><tr>'
+        + _mini_card("Escalated",       str(escalated_total),     D_ORANGE, D_ORANGE_BG, f"{esc_rate_overall}% of total")
+        + _mini_card("Multi-assigned",  str(multi_assigned_total), D_PURPLE, D_PURPLE_BG, f"{multi_assign_pct}% of total")
+        + _mini_card("Top Escalator",   top_esc_agent or "&mdash;", D_YELLOW, D_YELLOW_BG,
+                     f"{by_agent_escalated.get(top_esc_agent,0)} escalated" if top_esc_agent else "")
+        + '</tr></table>'
+        + ((f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-left:3px solid {D_ORANGE};'
+            f'border-radius:10px;padding:12px 16px;margin-bottom:8px">'
+            f'<div style="font-size:9px;font-weight:700;color:{D_ORANGE};text-transform:uppercase;letter-spacing:1.2px;margin-bottom:8px">Escalations per agent</div>'
+            f'<table style="width:100%;border-collapse:collapse">{esc_agent_rows}</table></div>'
         ) if esc_agent_rows else "")
-        + f'<div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:8px;padding:14px 16px;margin:10px 0 24px 0">'
-        f'<div style="font-size:10px;font-weight:700;color:{D_MUTED};text-transform:uppercase;letter-spacing:1px;margin-bottom:10px">Escalated conversation links</div>'
-        + _conv_pills(escalated_conv_ids[:20], D_YELLOW, "#2d2910") +
-        '</div>'
+        + _pill_box("Escalated conversation links", escalated_conv_ids[:20], D_ORANGE, D_ORANGE_BG, "margin-bottom:24px")
     )
 
     return (row1 + row2 + channel_section + category_section +
@@ -887,51 +862,59 @@ def run_daily_report():
   <title>FTUK Support Report</title>
 </head>
 <body style="margin:0;padding:0;background:{D_BG};font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;color:{D_TEXT}">
-<table width="100%" cellpadding="0" cellspacing="0" style="background:{D_BG};padding:32px 16px">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:{D_BG};padding:28px 16px 40px 16px">
 <tr><td align="center">
 <table width="660" cellpadding="0" cellspacing="0" style="max-width:660px;width:100%">
 
-  <!-- HEADER -->
+  <!-- HEADER CARD -->
   <tr>
-    <td style="padding:0 0 20px 0">
-      <table width="100%" cellpadding="0" cellspacing="0"><tr>
-        <td>
-          <div style="font-size:10px;font-weight:700;color:{D_BLUE};text-transform:uppercase;letter-spacing:2px;margin-bottom:6px">FTUK Intercom Report</div>
-          <div style="font-size:22px;font-weight:800;color:{D_TEXT};letter-spacing:-0.3px">Customer Support Report</div>
-          <div style="font-size:13px;color:{D_MUTED};margin-top:4px">{date_label} &mdash; full day</div>
-        </td>
-        <td align="right" style="vertical-align:top">
-          <div style="background:{D_CARD};border:1px solid {D_BORDER};border-radius:6px;padding:10px 14px;text-align:center">
-            <div style="font-size:9px;color:{D_MUTED};text-transform:uppercase;letter-spacing:1px">Generated</div>
-            <div style="font-size:11px;color:{D_TEXT};font-weight:600;margin-top:2px">{generated_at}</div>
-          </div>
-        </td>
-      </tr></table>
-      <!-- colour bar -->
-      <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:14px"><tr>
-        <td style="height:3px;background:{D_BLUE};width:33%"></td>
-        <td style="height:3px;background:{D_PURPLE};width:33%"></td>
-        <td style="height:3px;background:{D_GREEN};width:34%"></td>
-      </tr></table>
+    <td style="padding:0 0 6px 0">
+      <div style="background:linear-gradient(135deg,#1a2a4a 0%,#0f1117 55%,#1e1040 100%);border-radius:14px;padding:28px 28px 24px 28px;border:1px solid {D_BORDER2}">
+        <!-- top row: brand + timestamp -->
+        <table width="100%" cellpadding="0" cellspacing="0"><tr>
+          <td>
+            <div style="display:inline-block;background:{D_BLUE}18;border:1px solid {D_BLUE}40;border-radius:6px;padding:4px 10px;margin-bottom:14px">
+              <span style="font-size:9px;font-weight:700;color:{D_BLUE};text-transform:uppercase;letter-spacing:2px">FTUK Intercom</span>
+            </div>
+          </td>
+          <td align="right" style="vertical-align:top">
+            <div style="font-size:10px;color:{D_MUTED};text-align:right">{generated_at}</div>
+          </td>
+        </tr></table>
+        <!-- title -->
+        <div style="font-size:26px;font-weight:800;color:{D_TEXT};letter-spacing:-0.5px;line-height:1.2;margin-bottom:6px">Customer Support<br>Daily Report</div>
+        <div style="font-size:13px;color:{D_MUTED};margin-bottom:20px">{date_label}</div>
+        <!-- accent bar -->
+        <table width="100%" cellpadding="0" cellspacing="0"><tr>
+          <td style="height:2px;background:{D_BLUE};border-radius:1px;width:40%"></td>
+          <td style="height:2px;background:{D_PURPLE};border-radius:1px;width:30%"></td>
+          <td style="height:2px;background:{D_TEAL};border-radius:1px;width:20%"></td>
+          <td style="height:2px;background:{D_GREEN};border-radius:1px;width:10%"></td>
+        </tr></table>
+      </div>
     </td>
   </tr>
 
   <!-- CONTENT -->
   <tr>
-    <td style="background:{D_BG};padding:0">
+    <td style="padding:12px 0 0 0">
       {report_body}
     </td>
   </tr>
 
   <!-- FOOTER -->
   <tr>
-    <td style="padding:24px 0 0 0;border-top:1px solid {D_BORDER}">
-      <table width="100%" cellpadding="0" cellspacing="0"><tr>
-        <td style="font-size:11px;color:{D_MUTED}">Generated {generated_at} &middot; FTUK Intercom MCP</td>
-        <td align="right" style="font-size:11px">
-          <a href="https://app.intercom.com" style="color:{D_BLUE};text-decoration:none">Open Intercom &rarr;</a>
-        </td>
-      </tr></table>
+    <td style="padding:28px 0 0 0">
+      <div style="border-top:1px solid {D_BORDER};padding-top:20px">
+        <table width="100%" cellpadding="0" cellspacing="0"><tr>
+          <td>
+            <span style="font-size:10px;color:{D_MUTED}">FTUK Intercom MCP &middot; {generated_at}</span>
+          </td>
+          <td align="right">
+            <a href="https://app.intercom.com/a/inbox/{INTERCOM_APP_ID}" style="font-size:10px;color:{D_BLUE};text-decoration:none;font-weight:600">Open Intercom &rarr;</a>
+          </td>
+        </tr></table>
+      </div>
     </td>
   </tr>
 
