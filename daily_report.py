@@ -547,11 +547,19 @@ def build_report_html(summaries: List[Dict[str, Any]], report_date: datetime) ->
         f'</tr></table>'
     )
 
+    # ── agent sort: fastest first-response time = rank 1 ─────────────────────
+    def _agent_sort_key(a: str):
+        frt = by_agent_first_resp.get(a, [])
+        avg = sum(frt) / len(frt) if frt else float("inf")
+        return (avg, -by_agent_closed.get(a, 0))
+
     # ── AGENT LEADERBOARD (quick close table) ─────────────────────────────────
     agent_section = ""
     if by_agent_closed:
         agent_rows_html = ""
-        for rank, (agent, closed) in enumerate(sorted(by_agent_closed.items(), key=lambda x: -x[1]), 1):
+        _lb_agents = sorted(by_agent_closed.keys(), key=_agent_sort_key)
+        for rank, agent in enumerate(_lb_agents, 1):
+            closed = by_agent_closed[agent]
             avg_p   = round(sum(by_agent_parts.get(agent, [0])) / max(len(by_agent_parts.get(agent, [1])), 1))
             reopens = by_agent_reopened.get(agent, 0)
             medal   = ["🥇","🥈","🥉"][rank-1] if rank <= 3 else f"#{rank}"
@@ -678,7 +686,7 @@ def build_report_html(summaries: List[Dict[str, Any]], report_date: datetime) ->
     # ── AGENT PERFORMANCE SCORECARD ───────────────────────────────────────────
     all_scorecard_agents = sorted(
         set(list(by_agent_closed.keys()) + list(by_agent_handled.keys())),
-        key=lambda a: -(by_agent_closed.get(a, 0) + by_agent_handled.get(a, 0))
+        key=_agent_sort_key
     )
     scorecard_rows = ""
     for rank, agent in enumerate(all_scorecard_agents, 1):
