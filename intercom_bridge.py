@@ -92,8 +92,8 @@ def _send(payload: dict) -> Optional[dict]:
                 "error": {"code": -32603, "message": "SSE endpoint not ready"}}
 
     try:
-        _session.post(_message_endpoint, json=payload, timeout=60)
-        return _response_queue.get(timeout=60)
+        _session.post(_message_endpoint, json=payload, timeout=120)
+        return _response_queue.get(timeout=120)
     except queue.Empty:
         return {"jsonrpc": "2.0", "id": payload.get("id"),
                 "error": {"code": -32603, "message": "Response timeout"}}

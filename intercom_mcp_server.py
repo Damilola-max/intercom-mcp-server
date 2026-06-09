@@ -32,7 +32,7 @@ import queue
 from datetime import datetime, timedelta, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import requests
 
@@ -95,6 +95,18 @@ def _post(path: str, body: dict) -> Dict[str, Any]:
 # TOOL IMPLEMENTATIONS
 # =============================================================================
 
+# Intercom stores chat/messenger as source.type="conversation"; email as "email"
+_SOURCE_TYPE_MAP = {
+    "chat": "conversation",
+    "messenger": "conversation",
+    "live_chat": "conversation",
+}
+
+
+def _ts(date_str: str) -> int:
+    return int(datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
+
+
 def search_conversations(
     state: Optional[str] = None,
     source_type: Optional[str] = None,
@@ -122,19 +134,19 @@ def search_conversations(
         filters.append({"field": "state", "operator": "=", "value": state})
 
     if source_type:
-        filters.append({"field": "source.type", "operator": "=", "value": source_type})
+        # Map user-friendly names to Intercom's internal source.type values
+        api_type = _SOURCE_TYPE_MAP.get(source_type.lower(), source_type.lower())
+        filters.append({"field": "source.type", "operator": "=", "value": api_type})
 
     if date_from:
         try:
-            ts = int(datetime.strptime(date_from, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
-            filters.append({"field": "updated_at", "operator": ">", "value": ts})
+            filters.append({"field": "updated_at", "operator": ">", "value": _ts(date_from)})
         except ValueError:
             pass
 
     if date_to:
         try:
-            ts = int(datetime.strptime(date_to, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
-            filters.append({"field": "updated_at", "operator": "<", "value": ts})
+            filters.append({"field": "updated_at", "operator": "<", "value": _ts(date_to) + 86400})
         except ValueError:
             pass
 
@@ -178,24 +190,27 @@ def search_conversations(
     for c in conversations:
         src = c.get("source", {})
         stats = c.get("statistics", {}) or {}
-        assignee = c.get("assignee", {}) or {}
         raw_type = src.get("type", "unknown")
         channel = "chat" if raw_type == "conversation" else raw_type
+        assignee = c.get("assignee") or {}
+        team = c.get("team_assignee") or {}
         results.append({
             "id": c.get("id"),
             "state": c.get("state"),
             "channel": channel,
             "subject": src.get("subject", ""),
             "preview": (src.get("body") or "")[:200],
+            "assignee": assignee.get("name", "Unassigned"),
+            "team": team.get("name", ""),
             "handled_by_team": bool(stats.get("last_closed_by_id") or stats.get("first_admin_reply_at")),
             "created_at": datetime.fromtimestamp(c["created_at"], tz=timezone.utc).isoformat() if c.get("created_at") else None,
             "updated_at": datetime.fromtimestamp(c["updated_at"], tz=timezone.utc).isoformat() if c.get("updated_at") else None,
             "first_response_time_sec": stats.get("time_to_admin_reply"),
             "time_to_close_sec": stats.get("time_to_first_close"),
             "reply_count": stats.get("count_conversation_parts", 0),
-            "tags": [t.get("name") for t in c.get("tags", {}).get("tags", [])],
+            "tags": [t.get("name") for t in (c.get("tags") or {}).get("tags", [])],
             "priority": c.get("priority"),
-            "url": f"https://app.intercom.com/a/inbox/conversation/{c.get('id')}",
+            "url": f"https://app.intercom.com/a/inbox/lhjtrulf/inbox/shared/all/conversation/{c.get('id')}",
         })
 
     return {
@@ -366,12 +381,45 @@ def list_admins() -> Dict[str, Any]:
     return {"success": True, "count": len(admins), "admins": admins}
 
 
+def _avg_fmt(seconds_list) -> str:
+    if not seconds_list:
+        return "N/A"
+    avg = sum(seconds_list) / len(seconds_list)
+    h, m = divmod(int(avg), 3600)
+    m, s = divmod(m, 60)
+    return f"{h}h {m}m {s}s"
+
+
+def _paginate_search(body: dict, max_pages: int = 20) -> tuple:
+    """Paginate /conversations/search. Returns (conversations, total_count)."""
+    all_convs = []
+    starting_after = None
+    total_count = 0
+    for _ in range(max_pages):
+        if starting_after:
+            body["pagination"]["starting_after"] = starting_after
+        elif "starting_after" in body.get("pagination", {}):
+            del body["pagination"]["starting_after"]
+        data = _post("/conversations/search", body)
+        if "error" in data:
+            return all_convs, total_count
+        if total_count == 0:
+            total_count = data.get("total_count", 0)
+        all_convs.extend(data.get("conversations", []))
+        next_p = (data.get("pages") or {}).get("next") or {}
+        starting_after = next_p.get("starting_after")
+        if not starting_after:
+            break
+    return all_convs, total_count
+
+
 def get_workspace_stats(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Return high-level conversation statistics for a date range.
+    Uses total_count from the API for accurate numbers without fetching every page.
 
     Args:
         date_from: YYYY-MM-DD start date (defaults to yesterday)
@@ -383,9 +431,161 @@ def get_workspace_stats(
     if not date_to:
         date_to = today.isoformat()
 
-    # Pull all conversations in range (all states)
-    start_ts = int(datetime.strptime(date_from, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp())
-    end_ts = int(datetime.strptime(date_to, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp()) + 86400
+    start_ts = _ts(date_from)
+    end_ts   = _ts(date_to) + 86400
+
+    date_filter = [
+        {"field": "updated_at", "operator": ">", "value": start_ts},
+        {"field": "updated_at", "operator": "<", "value": end_ts},
+    ]
+
+    # --- total count (single fast request) ---
+    base_body = {
+        "query": {"operator": "AND", "value": date_filter},
+        "pagination": {"per_page": 1},
+    }
+    base_data = _post("/conversations/search", base_body)
+    if "error" in base_data:
+        return {"success": False, "error": base_data["error"]}
+    total = base_data.get("total_count", 0)
+
+    # --- per-state counts ---
+    by_state: Dict[str, int] = {}
+    for st in ("open", "closed", "snoozed"):
+        b = {
+            "query": {"operator": "AND", "value": date_filter + [{"field": "state", "operator": "=", "value": st}]},
+            "pagination": {"per_page": 1},
+        }
+        d = _post("/conversations/search", b)
+        by_state[st] = d.get("total_count", 0)
+
+    # --- per-channel counts ---
+    by_channel: Dict[str, int] = {}
+    for ch_api, ch_label in [("email", "email"), ("conversation", "chat"), ("api", "api")]:
+        b = {
+            "query": {"operator": "AND", "value": date_filter + [{"field": "source.type", "operator": "=", "value": ch_api}]},
+            "pagination": {"per_page": 1},
+        }
+        d = _post("/conversations/search", b)
+        cnt = d.get("total_count", 0)
+        if cnt:
+            by_channel[ch_label] = cnt
+
+    # --- fetch a sample (150) for response time averages ---
+    sample_body = {
+        "query": {"operator": "AND", "value": date_filter},
+        "pagination": {"per_page": 150},
+    }
+    sample_data = _post("/conversations/search", sample_body)
+    sample = sample_data.get("conversations", [])
+
+    response_times = []
+    close_times = []
+    unassigned = 0
+    for c in sample:
+        stats = c.get("statistics") or {}
+        if stats.get("time_to_admin_reply"):
+            response_times.append(stats["time_to_admin_reply"])
+        if stats.get("time_to_first_close"):
+            close_times.append(stats["time_to_first_close"])
+        if not (stats.get("last_closed_by_id") or stats.get("first_admin_reply_at")):
+            unassigned += 1
+
+    unassigned_pct = round(unassigned / len(sample) * 100) if sample else 0
+
+    return {
+        "success": True,
+        "date_range": {"from": date_from, "to": date_to},
+        "total_conversations": total,
+        "by_state": by_state,
+        "by_channel": by_channel,
+        "unassigned_in_sample": unassigned,
+        "unassigned_pct_estimate": f"{unassigned_pct}%",
+        "avg_first_response_time": _avg_fmt(response_times),
+        "avg_time_to_close": _avg_fmt(close_times),
+        "sample_size": len(sample),
+        "note": "by_state and by_channel use exact API counts; response times are estimated from a 150-conversation sample",
+    }
+
+
+def get_channel_breakdown(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Fast breakdown of conversation volume by channel for a date range.
+    Uses the API total_count — no full pagination needed.
+
+    Args:
+        date_from: YYYY-MM-DD start date (defaults to yesterday)
+        date_to: YYYY-MM-DD end date (defaults to today)
+    """
+    today = datetime.now(timezone.utc).date()
+    if not date_from:
+        date_from = (today - timedelta(days=1)).isoformat()
+    if not date_to:
+        date_to = today.isoformat()
+
+    start_ts = _ts(date_from)
+    end_ts   = _ts(date_to) + 86400
+    date_filter = [
+        {"field": "updated_at", "operator": ">", "value": start_ts},
+        {"field": "updated_at", "operator": "<", "value": end_ts},
+    ]
+
+    channels = [
+        ("email",        "email"),
+        ("conversation", "chat / messenger"),
+        ("api",          "api"),
+        ("twitter",      "twitter"),
+        ("facebook",     "facebook"),
+        ("phone_call",   "phone"),
+    ]
+    results = []
+    total = 0
+    for api_type, label in channels:
+        b = {
+            "query": {"operator": "AND", "value": date_filter + [{"field": "source.type", "operator": "=", "value": api_type}]},
+            "pagination": {"per_page": 1},
+        }
+        d = _post("/conversations/search", b)
+        cnt = d.get("total_count", 0)
+        if cnt:
+            results.append({"channel": label, "api_type": api_type, "count": cnt})
+            total += cnt
+
+    results.sort(key=lambda x: -x["count"])
+    for r in results:
+        r["pct"] = f"{round(r['count'] / total * 100)}%" if total else "0%"
+
+    return {
+        "success": True,
+        "date_range": {"from": date_from, "to": date_to},
+        "total": total,
+        "busiest_channel": results[0]["channel"] if results else "none",
+        "by_channel": results,
+    }
+
+
+def get_agent_stats(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Return per-agent performance stats: conversations closed, handled, avg first response time.
+
+    Args:
+        date_from: YYYY-MM-DD start date (defaults to yesterday)
+        date_to: YYYY-MM-DD end date (defaults to today)
+    """
+    today = datetime.now(timezone.utc).date()
+    if not date_from:
+        date_from = (today - timedelta(days=1)).isoformat()
+    if not date_to:
+        date_to = today.isoformat()
+
+    start_ts = _ts(date_from)
+    end_ts   = _ts(date_to) + 86400
 
     body = {
         "query": {
@@ -397,66 +597,97 @@ def get_workspace_stats(
         },
         "pagination": {"per_page": 150},
     }
+    convs, total_count = _paginate_search(body, max_pages=15)
 
-    all_convs = []
-    starting_after = None
-    while True:
-        if starting_after:
-            body["pagination"]["starting_after"] = starting_after
-        data = _post("/conversations/search", body)
-        if "error" in data:
-            return {"success": False, "error": data["error"]}
-        items = data.get("conversations", [])
-        all_convs.extend(items)
-        pages = data.get("pages", {})
-        next_p = (pages.get("next") or {})
-        starting_after = next_p.get("starting_after")
-        if not starting_after:
-            break
-
-    total = len(all_convs)
-    by_state: Dict[str, int] = {}
-    by_channel: Dict[str, int] = {}
-    response_times = []
-    close_times = []
-    unassigned = 0
-
-    for c in all_convs:
-        state = c.get("state", "unknown")
-        by_state[state] = by_state.get(state, 0) + 1
-
-        stats = c.get("statistics") or {}
-        raw_type = (c.get("source") or {}).get("type", "unknown")
-        ch = "chat" if raw_type == "conversation" else raw_type
-        by_channel[ch] = by_channel.get(ch, 0) + 1
-
+    by_agent: Dict[str, Dict] = {}
+    for c in convs:
+        stats  = c.get("statistics") or {}
+        closed_by = stats.get("last_closed_by_id")
+        assignee  = (c.get("assignee") or {})
+        agent_id  = closed_by or assignee.get("id")
+        agent_name = assignee.get("name", "Unassigned")
+        if not agent_id or agent_name == "Unassigned":
+            continue
+        if agent_id not in by_agent:
+            by_agent[agent_id] = {"name": agent_name, "closed": 0, "handled": 0, "frt_list": [], "ttc_list": []}
+        if c.get("state") == "closed":
+            by_agent[agent_id]["closed"] += 1
+        if stats.get("first_admin_reply_at"):
+            by_agent[agent_id]["handled"] += 1
         if stats.get("time_to_admin_reply"):
-            response_times.append(stats["time_to_admin_reply"])
+            by_agent[agent_id]["frt_list"].append(stats["time_to_admin_reply"])
         if stats.get("time_to_first_close"):
-            close_times.append(stats["time_to_first_close"])
+            by_agent[agent_id]["ttc_list"].append(stats["time_to_first_close"])
 
-        if not (stats.get("last_closed_by_id") or stats.get("first_admin_reply_at")):
-            unassigned += 1
-
-    def _avg_fmt(seconds_list):
-        if not seconds_list:
-            return "N/A"
-        avg = sum(seconds_list) / len(seconds_list)
-        h, m = divmod(int(avg), 3600)
-        m, s = divmod(m, 60)
-        return f"{h}h {m}m {s}s"
+    results = []
+    for aid, d in by_agent.items():
+        results.append({
+            "agent": d["name"],
+            "closed": d["closed"],
+            "handled": d["handled"],
+            "avg_first_response": _avg_fmt(d["frt_list"]),
+            "avg_time_to_close": _avg_fmt(d["ttc_list"]),
+        })
+    results.sort(key=lambda x: -x["closed"])
 
     return {
         "success": True,
         "date_range": {"from": date_from, "to": date_to},
-        "total_conversations": total,
-        "by_state": by_state,
-        "by_channel": by_channel,
-        "unassigned_count": unassigned,
-        "avg_first_response_time": _avg_fmt(response_times),
-        "avg_time_to_close": _avg_fmt(close_times),
-        "conversations_with_response": len(response_times),
-        "conversations_closed": len(close_times),
+        "total_in_sample": len(convs),
+        "total_count": total_count,
+        "agents": results,
+    }
+
+
+def get_team_stats(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Return per-team conversation volume for a date range.
+
+    Args:
+        date_from: YYYY-MM-DD start date (defaults to yesterday)
+        date_to: YYYY-MM-DD end date (defaults to today)
+    """
+    today = datetime.now(timezone.utc).date()
+    if not date_from:
+        date_from = (today - timedelta(days=1)).isoformat()
+    if not date_to:
+        date_to = today.isoformat()
+
+    start_ts = _ts(date_from)
+    end_ts   = _ts(date_to) + 86400
+
+    # Get all teams first
+    teams_data = _get("/teams")
+    teams = {t["id"]: t["name"] for t in teams_data.get("teams", [])}
+
+    date_filter = [
+        {"field": "updated_at", "operator": ">", "value": start_ts},
+        {"field": "updated_at", "operator": "<", "value": end_ts},
+    ]
+
+    results = []
+    for team_id, team_name in teams.items():
+        b = {
+            "query": {"operator": "AND", "value": date_filter + [{"field": "team_assignee_id", "operator": "=", "value": team_id}]},
+            "pagination": {"per_page": 1},
+        }
+        d = _post("/conversations/search", b)
+        cnt = d.get("total_count", 0)
+        results.append({"team": team_name, "count": cnt})
+
+    results.sort(key=lambda x: -x["count"])
+    total = sum(r["count"] for r in results)
+    for r in results:
+        r["pct"] = f"{round(r['count'] / total * 100)}%" if total else "0%"
+
+    return {
+        "success": True,
+        "date_range": {"from": date_from, "to": date_to},
+        "total": total,
+        "by_team": results,
     }
 
 
@@ -529,6 +760,51 @@ TOOLS = {
         "description": (
             "Get high-level customer support statistics for a date range: "
             "total conversations, breakdown by state and channel, avg response times, unassigned count."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "date_from": {"type": "string", "description": "Start date YYYY-MM-DD (default: yesterday)"},
+                "date_to": {"type": "string", "description": "End date YYYY-MM-DD (default: today)"},
+            },
+            "required": [],
+        },
+    },
+    "get_channel_breakdown": {
+        "description": (
+            "Fast and accurate breakdown of conversation volume by channel (email, chat, api, etc.) "
+            "for a date range. Use this to answer 'what is the busiest channel' questions. "
+            "Returns exact counts from the API without slow pagination."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "date_from": {"type": "string", "description": "Start date YYYY-MM-DD (default: yesterday)"},
+                "date_to": {"type": "string", "description": "End date YYYY-MM-DD (default: today)"},
+            },
+            "required": [],
+        },
+    },
+    "get_agent_stats": {
+        "description": (
+            "Return per-agent performance stats for a date range: conversations closed, handled, "
+            "average first response time, average time to close. "
+            "Use this to compare agent productivity and response speed."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "date_from": {"type": "string", "description": "Start date YYYY-MM-DD (default: yesterday)"},
+                "date_to": {"type": "string", "description": "End date YYYY-MM-DD (default: today)"},
+            },
+            "required": [],
+        },
+    },
+    "get_team_stats": {
+        "description": (
+            "Return per-team conversation volume for a date range. "
+            "Shows how many conversations each support team handled. "
+            "Use this to understand workload distribution across teams."
         ),
         "parameters": {
             "type": "object",
@@ -718,6 +994,12 @@ def _dispatch_tool(name: str, args: dict) -> Any:
             return list_admins()
         if name == "get_workspace_stats":
             return get_workspace_stats(**args)
+        if name == "get_channel_breakdown":
+            return get_channel_breakdown(**args)
+        if name == "get_agent_stats":
+            return get_agent_stats(**args)
+        if name == "get_team_stats":
+            return get_team_stats(**args)
         return {"success": False, "error": f"Unknown tool: {name}"}
     except Exception as exc:
         logger.error(f"Tool error [{name}]: {exc}")
