@@ -25,8 +25,22 @@ import json
 import logging
 import threading
 import queue
-import requests
 from typing import Optional
+
+# Auto-install missing dependencies so the bridge works out-of-the-box on any machine
+def _ensure(pkg: str, import_name: str = None):
+    import importlib
+    try:
+        importlib.import_module(import_name or pkg)
+    except ImportError:
+        import subprocess
+        subprocess.check_call([sys.executable, "-m", "pip", "install", pkg],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+_ensure("requests")
+_ensure("python-dotenv", "dotenv")
+
+import requests
 
 try:
     from dotenv import load_dotenv
