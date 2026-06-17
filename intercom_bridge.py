@@ -16,7 +16,7 @@ Usage (Claude Desktop config):
     }
 
 Environment Variables (set in a .env next to this file, or system env):
-    INTERCOM_MCP_SSE_URL   EC2 SSE URL (default: http://13.222.176.24:3002/sse)
+    INTERCOM_MCP_SSE_URL   EC2 SSE URL (default: http://32.199.177.52:3004/sse)
 """
 
 import os
@@ -57,7 +57,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("intercom-bridge")
 
-SSE_URL: str = os.getenv("INTERCOM_MCP_SSE_URL", "http://13.222.176.24:3004/sse")
+SSE_URL: str = os.getenv("INTERCOM_MCP_SSE_URL", "http://32.199.177.52:3004/sse")
 _message_endpoint: Optional[str] = None
 _response_queue: queue.Queue = queue.Queue()
 _session = requests.Session()

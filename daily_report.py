@@ -57,6 +57,9 @@ REPORT_RECIPIENTS: List[str] = [
 REPORT_CC: List[str] = [
     r.strip() for r in os.getenv("REPORT_CC", "abdel@ftuk.com").split(",") if r.strip()
 ]
+REPORT_BCC: List[str] = [
+    r.strip() for r in os.getenv("REPORT_BCC", "").split(",") if r.strip()
+]
 REPORT_SEND_TIME: str = os.getenv("REPORT_SEND_TIME", "08:00")
 
 SMTP_HOST: str = os.getenv("SMTP_HOST", "smtp.gmail.com")
@@ -249,6 +252,16 @@ def summarise_conversation(conv: Dict[str, Any]) -> Dict[str, Any]:
 # ─── Analytics report builder (pure Python) ───────────────────────────────────
 
 # Keywords used to auto-categorise conversations by subject / preview
+def _trimmed_avg(values: List[float], trim: int = 2) -> Optional[float]:
+    """Return mean after removing `trim` lowest and `trim` highest outliers.
+    Falls back to plain mean when there are not enough values to trim."""
+    if not values:
+        return None
+    s = sorted(values)
+    if len(s) > trim * 2:
+        s = s[trim:-trim]
+    return sum(s) / len(s)
+
 CATEGORIES: List[tuple] = [
     ("Billing & Payments",     ["billing", "invoice", "payment", "charge", "refund", "subscription", "fee"]),
     ("Payouts & Withdrawals",  ["payout", "withdrawal", "withdraw", "transfer", "funded", "profit split"]),
@@ -372,6 +385,7 @@ def build_report_html(summaries: List[Dict[str, Any]], report_date: datetime) ->
     by_agent_median_resp: Dict[str, List[float]] = {}
     by_agent_handled: Dict[str, int] = {}  # total convs touched (teammate)
     by_agent_escalated: Dict[str, int] = {}
+    by_agent_slow_frt: Dict[str, int] = {}
     by_agent_csat: Dict[str, List[int]] = {}
     by_category: Dict[str, int] = {}
     by_team: Dict[str, int] = {}
@@ -405,6 +419,7 @@ def build_report_html(summaries: List[Dict[str, Any]], report_date: datetime) ->
 
         if s.get("time_to_first_response"):
             first_resp_times.append(s["time_to_first_response"])
+
         if s.get("time_to_close"):
             close_times.append(s["time_to_close"])
         if s.get("was_handled"):
@@ -430,7 +445,10 @@ def build_report_html(summaries: List[Dict[str, Any]], report_date: datetime) ->
             by_agent_reopened[agent_name] = by_agent_reopened.get(agent_name, 0) + reopens
             by_agent_parts.setdefault(agent_name, []).append(parts)
             if s.get("time_to_first_response"):
-                by_agent_first_resp.setdefault(agent_name, []).append(s["time_to_first_response"])
+                frt_val = s["time_to_first_response"]
+                by_agent_first_resp.setdefault(agent_name, []).append(frt_val)
+                if frt_val > 1800:
+                    by_agent_slow_frt[agent_name] = by_agent_slow_frt.get(agent_name, 0) + 1
             if s.get("median_time_to_reply"):
                 by_agent_median_resp.setdefault(agent_name, []).append(s["median_time_to_reply"])
             if s.get("is_escalated"):
@@ -453,7 +471,7 @@ def build_report_html(summaries: List[Dict[str, Any]], report_date: datetime) ->
     snoozed_count    = by_state.get("snoozed", 0)
     unassigned_count = sum(1 for s in summaries if not s.get("closed_by_id"))
     resolution_rate  = round(closed_count / total * 100) if total else 0
-    avg_first_resp   = sum(first_resp_times) / len(first_resp_times) if first_resp_times else None
+    avg_first_resp   = _trimmed_avg(first_resp_times)
     avg_ttc          = sum(close_times) / len(close_times) if close_times else None
     handled_pct      = round(got_response / total * 100) if total else 0
     unhandled_pct    = 100 - handled_pct
@@ -695,7 +713,9 @@ def build_report_html(summaries: List[Dict[str, Any]], report_date: datetime) ->
         parts_list   = by_agent_parts.get(agent, [])
         avg_parts    = round(sum(parts_list) / len(parts_list)) if parts_list else 0
         frt_list     = by_agent_first_resp.get(agent, [])
-        avg_frt      = sum(frt_list) / len(frt_list) if frt_list else None
+        avg_frt_all  = sum(frt_list) / len(frt_list) if frt_list else None
+        avg_frt      = _trimmed_avg(frt_list)
+        slow_frt     = by_agent_slow_frt.get(agent, 0)
         mtr_list     = by_agent_median_resp.get(agent, [])
         avg_mtr      = sum(mtr_list) / len(mtr_list) if mtr_list else None
         reopens      = by_agent_reopened.get(agent, 0)
@@ -709,6 +729,7 @@ def build_report_html(summaries: List[Dict[str, Any]], report_date: datetime) ->
         csat_str     = f"{avg_csat}/5" if avg_csat else "&mdash;"
         csat_color   = D_GREEN if avg_csat and avg_csat >= 4 else (D_YELLOW if avg_csat else D_MUTED)
         frt_color    = D_GREEN if avg_frt and avg_frt < 3600 else (D_YELLOW if avg_frt and avg_frt < 14400 else D_RED)
+        frt_all_color = D_GREEN if avg_frt_all and avg_frt_all < 3600 else (D_YELLOW if avg_frt_all and avg_frt_all < 14400 else D_RED)
         scorecard_rows += (
             f'<tr style="background:{row_bg}">'
             f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER}">'
@@ -717,12 +738,14 @@ def build_report_html(summaries: List[Dict[str, Any]], report_date: datetime) ->
             f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};text-align:center">'
             f'<span style="background:{D_GREEN_BG};color:{D_GREEN};padding:3px 10px;border-radius:99px;font-size:12px;font-weight:700;border:1px solid {D_GREEN}30">{closed}</span></td>'
             f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};text-align:center;color:{D_TEXT2};font-size:12px">{handled}</td>'
+            f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};text-align:center;color:{frt_all_color};font-size:12px">{_fmt_seconds(avg_frt_all)}</td>'
             f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};text-align:center;color:{frt_color};font-size:12px;font-weight:600">{_fmt_seconds(avg_frt)}</td>'
             f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};text-align:center;color:{D_MUTED};font-size:12px">{_fmt_seconds(avg_mtr)}</td>'
             f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};text-align:center;color:{D_MUTED};font-size:12px">{avg_parts}</td>'
             f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};text-align:center;color:{D_RED if reopens > 0 else D_MUTED};font-size:12px;font-weight:{"700" if reopens > 0 else "400"}">{reopens}</td>'
             f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};text-align:center;color:{D_ORANGE if esc_rate > 0 else D_MUTED};font-size:12px">{esc_rate}%</td>'
             f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};text-align:center;color:{csat_color};font-size:12px;font-weight:600">{csat_str}</td>'
+            f'<td style="padding:12px 14px;border-bottom:1px solid {D_BORDER};text-align:center;color:{D_RED if slow_frt > 0 else D_MUTED};font-size:12px;font-weight:{"700" if slow_frt > 0 else "400"}">{slow_frt if slow_frt > 0 else "&mdash;"}</td>'
             f'</tr>'
         )
 
@@ -737,7 +760,7 @@ def build_report_html(summaries: List[Dict[str, Any]], report_date: datetime) ->
         f'<table style="width:100%;border-collapse:collapse">'
         f'<thead><tr style="background:{D_CARD2}">'
         f'<th style="padding:10px 14px;text-align:left;font-size:9px;color:{D_MUTED};font-weight:700;text-transform:uppercase;letter-spacing:1px;border-bottom:2px solid {D_BORDER2}">Agent</th>'
-        + _th("Closed") + _th("Touched") + _th("1st Resp") + _th("Median Resp") + _th("Avg Msgs") + _th("Reopens") + _th("Esc Rate") + _th("CSAT") +
+        + _th("Closed") + _th("Touched") + _th("1st Resp (All)") + _th("1st Resp (Outlier Removed)") + _th("Median Resp") + _th("Avg Msgs") + _th("Reopens") + _th("Esc Rate") + _th("CSAT") + _th(">30m 1st Resp") +
         f'</tr></thead><tbody>{scorecard_rows}</tbody></table></div>'
     ) if all_scorecard_agents else ""
 
@@ -815,7 +838,7 @@ def send_report_email(subject: str, html_body: str) -> bool:
     msg["Subject"] = subject
     msg.attach(MIMEText(html_body, "html"))
 
-    all_recipients = REPORT_RECIPIENTS + REPORT_CC
+    all_recipients = REPORT_RECIPIENTS + REPORT_CC + REPORT_BCC
 
     try:
         if SMTP_PORT == 465:
@@ -830,7 +853,7 @@ def send_report_email(subject: str, html_body: str) -> bool:
                 server.login(SENDER_ADDRESS, SENDER_PASSWORD)
                 server.sendmail(SENDER_ADDRESS, all_recipients, msg.as_string())
 
-        logger.info(f"Report email sent to: {REPORT_RECIPIENTS}, cc: {REPORT_CC}")
+        logger.info(f"Report email sent to: {REPORT_RECIPIENTS}, cc: {REPORT_CC}, bcc: {REPORT_BCC}")
         return True
     except Exception as exc:
         logger.error(f"Failed to send report email: {exc}")
